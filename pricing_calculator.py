@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
 import requests
 import time
-import yaml
 import json
-from typing import Dict, List
-
-def load_config() -> Dict:
-    """Load configuration from config.yml"""
-    with open('config.yml', 'r') as f:
-        return yaml.safe_load(f)
+import os
 
 def wait_for_server(base_url: str = "http://localhost:8000", timeout: int = 300):
     """Wait for vLLM server to be ready"""
@@ -17,7 +11,6 @@ def wait_for_server(base_url: str = "http://localhost:8000", timeout: int = 300)
         try:
             response = requests.get(f"{base_url}/v1/models", timeout=5)
             if response.status_code == 200:
-                print("✓ vLLM server is ready!")
                 return True
         except requests.exceptions.RequestException:
             pass
@@ -31,16 +24,13 @@ def benchmark_throughput(
     output_tokens: int,
     num_requests: int
 ) -> float:
-    """
-    Benchmark the model and return throughput in tokens/second
-    """
+    """Benchmark the model and return throughput in tokens/second"""
     print(f"\nBenchmarking with {num_requests} requests...")
     print(f"  Input tokens: {input_tokens}")
     print(f"  Output tokens: {output_tokens}")
     print("")
     
     # Create a prompt that's approximately the right length
-    # Rough estimate: 1 token ≈ 4 characters
     prompt = "Explain the concept of machine learning. " * (input_tokens // 10)
     
     total_tokens = 0
@@ -76,12 +66,8 @@ def benchmark_throughput(
     throughput = total_tokens / total_time
     return throughput
 
-def calculate_pricing(throughput: float, gpu_cost_per_hour: float) -> Dict[str, float]:
-    """
-    Calculate pricing based on throughput and GPU cost
-    
-    Formula: Cost per token = GPU hourly cost / (throughput * 3600 seconds)
-    """
+def calculate_pricing(throughput: float, gpu_cost_per_hour: float):
+    """Calculate pricing based on throughput and GPU cost"""
     tokens_per_hour = throughput * 3600
     cost_per_token = gpu_cost_per_hour / tokens_per_hour
     cost_per_1k_tokens = cost_per_token * 1000
@@ -96,27 +82,27 @@ def calculate_pricing(throughput: float, gpu_cost_per_hour: float) -> Dict[str, 
     }
 
 def main():
-    # Load configuration
-    config = load_config()
+    # Read configuration from environment variables
+    model = os.environ.get('MODEL')
+    gpu_type = os.environ.get('GPU_TYPE')
+    gpu_cost = float(os.environ.get('GPU_COST'))
+    input_tokens = int(os.environ.get('INPUT_TOKENS'))
+    output_tokens = int(os.environ.get('OUTPUT_TOKENS'))
+    num_requests = int(os.environ.get('NUM_REQUESTS'))
+    port = os.environ.get('PORT')
     
-    model = config['model']
-    input_tokens = config['input_tokens']
-    output_tokens = config['output_tokens']
-    num_requests = config['num_requests']
-    gpu_type = config['gpu_type']
-    gpu_cost = config['gpu_costs'][gpu_type]
-    
-    base_url = "http://localhost:8000"
+    base_url = f"http://localhost:{port}"
     
     # Wait for server to be ready
     wait_for_server(base_url)
     
-    # Benchmark throughput
+    # Display config
     print(f"\n{'='*60}")
     print(f"Model: {model}")
     print(f"GPU: {gpu_type} (${gpu_cost}/hour)")
     print(f"{'='*60}")
     
+    # Benchmark throughput
     throughput = benchmark_throughput(
         base_url=base_url,
         model=model,
@@ -153,7 +139,7 @@ def main():
         "pricing": pricing
     }
     
-    with open('pricing_results.json', 'w') as f:
+    with open('/workspace/pricing_results.json', 'w') as f:
         json.dump(results, f, indent=2)
     
     print(f"\nResults saved to: pricing_results.json")
