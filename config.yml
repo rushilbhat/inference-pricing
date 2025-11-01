@@ -1,0 +1,18 @@
+# Model to benchmark
+model: "Qwen/Qwen2.5-0.5B"
+
+# Benchmark settings (fixed for MVP)
+input_tokens: 512
+output_tokens: 512
+num_requests: 20
+
+# GPU costs (hourly rate in USD)
+gpu_costs:
+  nvidia_a100_40gb: 2.50
+  nvidia_l4: 0.80
+  nvidia_h100: 4.00
+  nvidia_a10g: 1.00
+  nvidia_t4: 0.50
+
+# Which GPU you're running on
+gpu_type: "nvidia_a100_40gb"
