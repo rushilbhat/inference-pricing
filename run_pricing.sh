@@ -9,11 +9,6 @@ OUTPUT_TOKENS=512
 NUM_REQUESTS=20
 PORT=8000
 
-echo "=== vLLM Pricing Engine ==="
-echo "Model: $MODEL"
-echo "GPU: $GPU_TYPE (\$$GPU_COST/hour)"
-echo ""
-
 # Start server
 sudo docker run -d --name pricing-server \
     --runtime nvidia --gpus all \
@@ -21,13 +16,6 @@ sudo docker run -d --name pricing-server \
     -v ~/.cache/huggingface:/root/.cache/huggingface \
     vllm/vllm-openai:latest \
     --model $MODEL --port $PORT
-
-# Wait for server
-echo "Waiting for vLLM server..."
-until curl -s http://localhost:$PORT/v1/models > /dev/null 2>&1; do
-    sleep 2
-done
-echo "✓ Server ready!"
 
 # Run client (minimal Python image, no GPU needed!)
 sudo docker run --rm --name pricing-client \
