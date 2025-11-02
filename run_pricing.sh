@@ -4,8 +4,8 @@
 MODEL="Qwen/Qwen2.5-0.5B"
 GPU_TYPE="nvidia_a100_40gb"
 GPU_COST=2.50
-INPUT_TOKENS=512
-OUTPUT_TOKENS=512
+INPUT_TOKENS=1024
+OUTPUT_TOKENS=1024
 NUM_REQUESTS=20
 PORT=8000
 
@@ -30,7 +30,7 @@ sudo docker run --rm --name pricing-client \
     -e NUM_REQUESTS="$NUM_REQUESTS" \
     -e PORT="$PORT" \
     python:3.12-slim \
-    bash -c "pip install -q requests && python3 pricing_calculator.py"
+    bash -c "pip install -q requests transformers numpy && python3 pricing_calculator.py"
 
 # Cleanup
 echo ""

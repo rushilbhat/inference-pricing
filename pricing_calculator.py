@@ -3,6 +3,8 @@ import requests
 import time
 import json
 import os
+import numpy as np
+from transformers import AutoTokenizer
 
 def wait_for_server(base_url: str = "http://localhost:8000", timeout: int = 300):
     """Wait for vLLM server to be ready"""
@@ -17,6 +19,13 @@ def wait_for_server(base_url: str = "http://localhost:8000", timeout: int = 300)
         time.sleep(2)
     raise TimeoutError("vLLM server did not start within timeout period")
 
+def generate_random_prompt(tokenizer, num_tokens: int) -> str:
+    """Generate a random prompt by sampling random token IDs and detokenizing"""
+    vocab_size = tokenizer.vocab_size
+    random_token_ids = np.random.randint(0, vocab_size, size=num_tokens)
+    prompt = tokenizer.decode(random_token_ids, skip_special_tokens=True)
+    return prompt
+
 def benchmark_throughput(
     base_url: str,
     model: str,
@@ -30,8 +39,9 @@ def benchmark_throughput(
     print(f"  Output tokens: {output_tokens}")
     print("")
     
-    # Create a prompt that's approximately the right length
-    prompt = "Explain the concept of machine learning. " * (input_tokens // 10)
+    # Load tokenizer and generate random prompt
+    tokenizer = AutoTokenizer.from_pretrained(model)
+    prompt = generate_random_prompt(tokenizer, input_tokens)
     
     total_tokens = 0
     total_time = 0
@@ -46,6 +56,8 @@ def benchmark_throughput(
                 "prompt": prompt,
                 "max_tokens": output_tokens,
                 "temperature": 0.0,
+                "stop": [],
+                "ignore_eos": True,
             },
             timeout=120
         )
@@ -55,11 +67,11 @@ def benchmark_throughput(
         if response.status_code == 200:
             result = response.json()
             tokens_generated = result['usage']['completion_tokens']
+            tokens_input = result['usage']['prompt_tokens']
             total_tokens += tokens_generated
             total_time += (end_time - start_time)
             
-            if (i + 1) % 5 == 0:
-                print(f"  Completed {i + 1}/{num_requests} requests...")
+            print(f"  Request {i + 1}: Input tokens: {tokens_input}, Output tokens: {tokens_generated}")
         else:
             print(f"  Warning: Request {i + 1} failed with status {response.status_code}")
     
@@ -70,15 +82,13 @@ def calculate_pricing(throughput: float, gpu_cost_per_hour: float):
     """Calculate pricing based on throughput and GPU cost"""
     tokens_per_hour = throughput * 3600
     cost_per_token = gpu_cost_per_hour / tokens_per_hour
-    cost_per_1k_tokens = cost_per_token * 1000
-    cost_per_1m_tokens = cost_per_token * 1000000
     
     return {
         "throughput_tokens_per_sec": throughput,
         "tokens_per_hour": tokens_per_hour,
         "cost_per_token": cost_per_token,
-        "cost_per_1k_tokens": cost_per_1k_tokens,
-        "cost_per_1m_tokens": cost_per_1m_tokens,
+        "cost_per_1k_tokens": cost_per_token * 1000,
+        "cost_per_1m_tokens": cost_per_token * 1000000,
     }
 
 def main():
