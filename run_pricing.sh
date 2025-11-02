@@ -30,7 +30,7 @@ sudo docker run --rm --name pricing-client \
     -e NUM_REQUESTS="$NUM_REQUESTS" \
     -e PORT="$PORT" \
     python:3.12-slim \
-    bash -c "pip install -q requests transformers numpy && python3 pricing_calculator.py"
+    bash -c "pip install -q requests transformers numpy aiohttp && python3 pricing_calculator.py"
 
 # Cleanup
 echo ""

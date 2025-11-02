@@ -4,6 +4,8 @@ import time
 import json
 import os
 import numpy as np
+import asyncio
+import aiohttp
 from transformers import AutoTokenizer
 
 def wait_for_server(base_url: str = "http://localhost:8000", timeout: int = 300):
@@ -26,7 +28,35 @@ def generate_random_prompt(tokenizer, num_tokens: int) -> str:
     prompt = tokenizer.decode(random_token_ids, skip_special_tokens=True)
     return prompt
 
-def benchmark_throughput(
+async def send_request(session, base_url, model, prompt, output_tokens, request_id):
+    """Send a single async request"""
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "max_tokens": output_tokens,
+        "temperature": 0.0,
+        "stop": [],
+        "ignore_eos": True,
+    }
+    
+    start_time = time.time()
+    try:
+        async with session.post(f"{base_url}/v1/completions", json=payload, timeout=120) as response:
+            end_time = time.time()
+            if response.status == 200:
+                result = await response.json()
+                tokens_input = result['usage']['prompt_tokens']
+                tokens_generated = result['usage']['completion_tokens']
+                print(f"  Request {request_id}: Input tokens: {tokens_input}, Output tokens: {tokens_generated}")
+                return tokens_generated, end_time - start_time
+            else:
+                print(f"  Warning: Request {request_id} failed with status {response.status}")
+                return 0, 0
+    except Exception as e:
+        print(f"  Error in request {request_id}: {e}")
+        return 0, 0
+
+async def benchmark_throughput(
     base_url: str,
     model: str,
     input_tokens: int,
@@ -43,37 +73,22 @@ def benchmark_throughput(
     tokenizer = AutoTokenizer.from_pretrained(model)
     prompt = generate_random_prompt(tokenizer, input_tokens)
     
-    total_tokens = 0
-    total_time = 0
+    # Record overall start time
+    overall_start = time.time()
     
-    for i in range(num_requests):
-        start_time = time.time()
-        
-        response = requests.post(
-            f"{base_url}/v1/completions",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "max_tokens": output_tokens,
-                "temperature": 0.0,
-                "stop": [],
-                "ignore_eos": True,
-            },
-            timeout=120
-        )
-        
-        end_time = time.time()
-        
-        if response.status_code == 200:
-            result = response.json()
-            tokens_generated = result['usage']['completion_tokens']
-            tokens_input = result['usage']['prompt_tokens']
-            total_tokens += tokens_generated
-            total_time += (end_time - start_time)
-            
-            print(f"  Request {i + 1}: Input tokens: {tokens_input}, Output tokens: {tokens_generated}")
-        else:
-            print(f"  Warning: Request {i + 1} failed with status {response.status_code}")
+    # Send all requests asynchronously
+    async with aiohttp.ClientSession() as session:
+        tasks = [
+            send_request(session, base_url, model, prompt, output_tokens, i + 1)
+            for i in range(num_requests)
+        ]
+        results = await asyncio.gather(*tasks)
+    
+    overall_end = time.time()
+    
+    # Calculate totals
+    total_tokens = sum(tokens for tokens, _ in results)
+    total_time = overall_end - overall_start
     
     throughput = total_tokens / total_time
     return throughput
@@ -113,13 +128,13 @@ def main():
     print(f"{'='*60}")
     
     # Benchmark throughput
-    throughput = benchmark_throughput(
+    throughput = asyncio.run(benchmark_throughput(
         base_url=base_url,
         model=model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         num_requests=num_requests
-    )
+    ))
     
     # Calculate pricing
     pricing = calculate_pricing(throughput, gpu_cost)
