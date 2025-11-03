@@ -15,7 +15,9 @@ sudo docker run -d --name pricing-server \
     --network host \
     -v ~/.cache/huggingface:/root/.cache/huggingface \
     vllm/vllm-openai:latest \
-    --model $MODEL --port $PORT
+    --model $MODEL \
+    --port $PORT \
+    --override-generation-config '{"max_new_tokens": 8192}'
 
 # Run client (minimal Python image, no GPU needed!)
 sudo docker run --rm --name pricing-client \
