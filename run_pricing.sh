@@ -6,7 +6,9 @@ GPU_TYPE="nvidia_a100_40gb"
 GPU_COST=2.50
 INPUT_TOKENS=1024
 OUTPUT_TOKENS=1024
-NUM_REQUESTS=20
+NUM_REQUESTS=30
+ARRIVAL_RATE=0.0
+ARRIVAL_BURSTINESS=1.0
 PORT=8000
 
 # Start server
@@ -28,6 +30,8 @@ sudo docker run --rm --name pricing-client \
     -e INPUT_TOKENS="$INPUT_TOKENS" \
     -e OUTPUT_TOKENS="$OUTPUT_TOKENS" \
     -e NUM_REQUESTS="$NUM_REQUESTS" \
+    -e ARRIVAL_RATE="$ARRIVAL_RATE" \
+    -e ARRIVAL_BURSTINESS="$ARRIVAL_BURSTINESS" \
     -e PORT="$PORT" \
     python:3.12-slim \
     bash -c "pip install -q requests transformers numpy aiohttp && python3 pricing_calculator.py"

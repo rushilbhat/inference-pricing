@@ -61,7 +61,9 @@ async def benchmark_throughput(
     model: str,
     input_tokens: int,
     output_tokens: int,
-    num_requests: int
+    num_requests: int,
+    arrival_rate: float,
+    arrival_burstiness: float
 ) -> float:
     """Benchmark the model and return throughput in tokens/second"""
     print(f"\nBenchmarking with {num_requests} requests...")
@@ -78,10 +80,18 @@ async def benchmark_throughput(
     
     # Send all requests asynchronously
     async with aiohttp.ClientSession() as session:
-        tasks = [
-            send_request(session, base_url, model, prompt, output_tokens, i + 1)
-            for i in range(num_requests)
-        ]
+        tasks = []
+        for i in range(num_requests):
+            if arrival_rate > 0 and i > 0:
+                k = max(arrival_burstiness, 1e-6)
+                theta = 1.0 / (arrival_rate * k)
+                gap = np.random.gamma(shape=k, scale=theta)
+                await asyncio.sleep(gap)
+            tasks.append(asyncio.create_task(
+                send_request(session, base_url, model, prompt, output_tokens, i + 1)
+            ))
+
+
         results = await asyncio.gather(*tasks)
     
     overall_end = time.time()
@@ -89,7 +99,6 @@ async def benchmark_throughput(
     # Calculate totals
     total_tokens = sum(tokens for tokens, _ in results)
     total_time = overall_end - overall_start
-    
     throughput = total_tokens / total_time
     return throughput
 
@@ -114,6 +123,8 @@ def main():
     input_tokens = int(os.environ.get('INPUT_TOKENS'))
     output_tokens = int(os.environ.get('OUTPUT_TOKENS'))
     num_requests = int(os.environ.get('NUM_REQUESTS'))
+    arrival_rate = float(os.environ.get('ARRIVAL_RATE'))
+    arrival_burstiness = float(os.environ.get('ARRIVAL_BURSTINESS'))
     port = os.environ.get('PORT')
     
     base_url = f"http://localhost:{port}"
@@ -133,7 +144,9 @@ def main():
         model=model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        num_requests=num_requests
+        num_requests=num_requests,
+        arrival_rate=arrival_rate,
+        arrival_burstiness=arrival_burstiness
     ))
     
     # Calculate pricing
@@ -160,6 +173,8 @@ def main():
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "num_requests": num_requests,
+            "arrival_rate": arrival_rate,
+            "arrival_burstiness": arrival_burstiness
         },
         "pricing": pricing
     }
