@@ -8,6 +8,12 @@ import asyncio
 import aiohttp
 from transformers import AutoTokenizer
 
+WORKLOADS = [
+    (1024, 1024),  # chat
+    (1024, 8192),  # reasoning
+    (8192, 1024),  # summarising
+]
+
 def wait_for_server(base_url: str = "http://localhost:8000", timeout: int = 300):
     """Wait for vLLM server to be ready"""
     start_time = time.time()
@@ -28,12 +34,12 @@ def generate_random_prompt(tokenizer, num_tokens: int) -> str:
     prompt = tokenizer.decode(random_token_ids, skip_special_tokens=True)
     return prompt
 
-async def send_request(session, base_url, model, prompt, output_tokens, request_id):
+async def send_request(session, base_url, model, prompt, osl, request_id):
     """Send a single async request"""
     payload = {
         "model": model,
         "prompt": prompt,
-        "max_tokens": output_tokens,
+        "max_tokens": osl,
         "temperature": 0.0,
         "stop": [],
         "ignore_eos": True,
@@ -59,22 +65,24 @@ async def send_request(session, base_url, model, prompt, output_tokens, request_
 async def benchmark_throughput(
     base_url: str,
     model: str,
-    input_tokens: int,
-    output_tokens: int,
     num_requests: int,
     arrival_rate: float,
     arrival_burstiness: float
 ) -> float:
-    """Benchmark the model and return throughput in tokens/second"""
+    """Benchmark the model and return throughput in tokens/second"""    
     print(f"\nBenchmarking with {num_requests} requests...")
-    print(f"  Input tokens: {input_tokens}")
-    print(f"  Output tokens: {output_tokens}")
+    print("  Mixed workloads (equal probability):")
+    print("   - 1024 ISL / 1024 OSL (chat)")
+    print("   - 1024 ISL / 8192 OSL (reasoning)")
+    print("   - 8192 ISL / 1024 OSL (summarising)\n")
     print("")
-    
-    # Load tokenizer and generate random prompt
+
     tokenizer = AutoTokenizer.from_pretrained(model)
-    prompt = generate_random_prompt(tokenizer, input_tokens)
-    
+
+    # Pre-generate one prompt per distinct ISL to avoid re-decoding every time
+    distinct_isl = sorted({isl for isl, _ in WORKLOADS})
+    prompts_by_isl = {isl: generate_random_prompt(tokenizer, isl) for isl in distinct_isl}
+
     # Record overall start time
     overall_start = time.time()
     
@@ -82,15 +90,17 @@ async def benchmark_throughput(
     async with aiohttp.ClientSession() as session:
         tasks = []
         for i in range(num_requests):
+            # Equal probability pick of workload
+            isl, osl = WORKLOADS[np.random.randint(0, len(WORKLOADS))]
+            prompt = prompts_by_isl[isl]
             if arrival_rate > 0 and i > 0:
                 k = max(arrival_burstiness, 1e-6)
                 theta = 1.0 / (arrival_rate * k)
                 gap = np.random.gamma(shape=k, scale=theta)
                 await asyncio.sleep(gap)
             tasks.append(asyncio.create_task(
-                send_request(session, base_url, model, prompt, output_tokens, i + 1)
+                send_request(session, base_url, model, prompt, osl, i + 1)
             ))
-
 
         results = await asyncio.gather(*tasks)
     
@@ -120,8 +130,6 @@ def main():
     model = os.environ.get('MODEL')
     gpu_type = os.environ.get('GPU_TYPE')
     gpu_cost = float(os.environ.get('GPU_COST'))
-    input_tokens = int(os.environ.get('INPUT_TOKENS'))
-    output_tokens = int(os.environ.get('OUTPUT_TOKENS'))
     num_requests = int(os.environ.get('NUM_REQUESTS'))
     arrival_rate = float(os.environ.get('ARRIVAL_RATE'))
     arrival_burstiness = float(os.environ.get('ARRIVAL_BURSTINESS'))
@@ -142,8 +150,6 @@ def main():
     throughput = asyncio.run(benchmark_throughput(
         base_url=base_url,
         model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
         num_requests=num_requests,
         arrival_rate=arrival_rate,
         arrival_burstiness=arrival_burstiness
@@ -170,8 +176,9 @@ def main():
         "gpu_type": gpu_type,
         "gpu_cost_per_hour": gpu_cost,
         "benchmark_config": {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
+            "workloads": [
+                {"input_tokens": isl, "output_tokens": osl} for isl, osl in WORKLOADS
+            ],
             "num_requests": num_requests,
             "arrival_rate": arrival_rate,
             "arrival_burstiness": arrival_burstiness
