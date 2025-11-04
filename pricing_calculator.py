@@ -28,10 +28,7 @@ def wait_for_server(base_url: str = "http://localhost:8000", timeout: int = 300)
 def load_joint_probs(path):
     with open(path, "r", encoding="utf-8") as f:
         obj = json.load(f)
-    isl_bins = obj["isl_bins"]
-    osl_bins = obj["osl_bins"]
-    P = np.array(obj["probabilities"], dtype=float)
-    return isl_bins, osl_bins, P
+    return obj["isl_bins"], obj["osl_bins"], np.array(obj["probabilities"], dtype=float)
 
 def generate_random_prompt(tokenizer, num_tokens: int) -> str:
     vocab_size = tokenizer.vocab_size
@@ -40,11 +37,7 @@ def generate_random_prompt(tokenizer, num_tokens: int) -> str:
     return prompt
 
 def bin_midpoints(edges):
-    mids = []
-    for i in range(len(edges) - 1):
-        lo, hi = edges[i], edges[i + 1]
-        mids.append((lo + hi) // 2)
-    return mids
+    return [(edges[i] + edges[i+1]) // 2 for i in range(len(edges)-1)]
 
 def make_sampler_generic(workloads):
     """Uniform sampler over fixed (isl, osl) tuples."""
@@ -59,12 +52,26 @@ def make_sampler_wildchat(isl_bins, osl_bins, P):
     flat = P.ravel()
     idx = np.arange(flat.size)
     W = P.shape[1]
-
     def sampler():
         k = np.random.choice(idx, p=flat)
         i, j = divmod(k, W)                 # map 1D index -> (row i, col j)
         return isl_mids[i], osl_mids[j]
     return sampler
+
+def get_prompt_for_isl(tokenizer, cache, isl):
+    """Return a cached random prompt of isl tokens, generating if needed."""
+    if isl not in cache:
+        cache[isl] = generate_random_prompt(tokenizer, isl)
+    return cache[isl]
+
+# ----------------------------
+# Arrival parameters
+# ----------------------------
+
+def load_arrival_k_theta(path):
+    with open(path, "r", encoding="utf-8") as f:
+        obj = json.load(f)
+    return float(obj["k"]), float(obj["theta"])
 
 # ----------------------------
 # Inference call
@@ -96,15 +103,6 @@ async def send_request(session, base_url, model, prompt, osl, request_id):
     except Exception as e:
         print(f"  Error in request {request_id}: {e}")
         return 0, 0
-    
-
-def get_prompt_for_isl(tokenizer, cache, isl):
-    """Return a cached random prompt of isl tokens, generating if needed."""
-    p = cache.get(isl)
-    if p is None:
-        p = generate_random_prompt(tokenizer, isl)
-        cache[isl] = p
-    return p
 
 # ----------------------------
 # Benchmark loop
@@ -114,9 +112,9 @@ async def benchmark_throughput(
     base_url: str,
     model: str,
     num_requests: int,
-    arrival_rate: float,
-    arrival_burstiness: float,
-    sampler
+    sampler,
+    k, 
+    theta
 ) -> float:
     print(f"\nBenchmarking with {num_requests} requests...")
     print("")
@@ -133,9 +131,8 @@ async def benchmark_throughput(
             isl, osl = sampler()
             prompt = get_prompt_for_isl(tokenizer, prompts_by_isl, int(isl))
 
-            if arrival_rate > 0 and i > 0:
-                k = max(arrival_burstiness, 1e-6)
-                theta = 1.0 / (arrival_rate * k)
+            # If k & theta provided, add gaps; else fire immediately
+            if (k is not None) and (theta is not None) and i > 0:
                 gap = np.random.gamma(shape=k, scale=theta)
                 await asyncio.sleep(gap)
             tasks.append(asyncio.create_task(
@@ -176,20 +173,20 @@ def main():
     gpu_type = os.environ.get('GPU_TYPE')
     gpu_cost = float(os.environ.get('GPU_COST'))
     num_requests = int(os.environ.get('NUM_REQUESTS'))
-    arrival_rate = float(os.environ.get('ARRIVAL_RATE'))
-    arrival_burstiness = float(os.environ.get('ARRIVAL_BURSTINESS'))
     port = os.environ.get('PORT')
     base_url = f"http://localhost:{port}"
     
     wait_for_server(base_url)
-    
+
+    mode = os.environ.get("WORKLOAD_MODE", "generic").lower()
+    joint_probs_path = os.environ.get("JOINT_PROBS_PATH")
+    arrival_json_path = os.environ.get("ARRIVAL_JSON_PATH")
+
     # Display config
     print(f"\n{'='*60}")
     print(f"Model: {model}")
     print(f"GPU: {gpu_type} (${gpu_cost}/hour)")
     print(f"{'='*60}")
-
-    mode = os.environ.get("WORKLOAD_MODE", "generic").lower()
 
     if mode == "generic":
         workloads = [
@@ -199,22 +196,25 @@ def main():
         ]
         sampler = make_sampler_generic(workloads)
     elif mode == "wildchat":
-        joint_probs_path = os.environ.get("JOINT_PROBS_PATH")
         if not joint_probs_path or not os.path.exists(joint_probs_path):
             raise FileNotFoundError("WORKLOAD_MODE=wildchat but JOINT_PROBS_PATH is missing.")
         isl_bins, osl_bins, P = load_joint_probs(joint_probs_path)
         sampler = make_sampler_wildchat(isl_bins, osl_bins, P)
     else:
         raise ValueError(f"Unknown WORKLOAD_MODE: {mode}")
-
+    
+    k = theta = None
+    if arrival_json_path and os.path.exists(arrival_json_path):
+        k, theta = load_arrival_k_theta(arrival_json_path)
+        print(f"Loaded arrival params from {arrival_json_path}: k={k:.3f}, theta={theta:.6f}s")
     
     throughput = asyncio.run(benchmark_throughput(
         base_url=base_url,
         model=model,
         num_requests=num_requests,
-        arrival_rate=arrival_rate,
-        arrival_burstiness=arrival_burstiness,
-        sampler=sampler
+        sampler=sampler,
+        k=k,
+        theta=theta
     ))
     
     pricing = calculate_pricing(throughput, gpu_cost)

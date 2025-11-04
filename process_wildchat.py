@@ -3,9 +3,11 @@ import json
 import numpy as np
 from datasets import load_dataset
 from transformers import AutoTokenizer
+from datetime import datetime, timezone
 
 CACHE_FILE_IN = "isl_osl_timestamp_first_1000.jsonl"
 CACHE_FILE_PROBS = "isl_osl_jointprobs_first_1000.json"
+ARRIVAL_OUT = "wildchat_arrival_first_1000.json"
 
 ISL_BINS = [0, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 OSL_BINS = ISL_BINS
@@ -91,3 +93,31 @@ pairs.sort(key=lambda x: x[1], reverse=True)
 print("\nTop (ISL_bin, OSL_bin) probabilities:")
 for (isl_lo, isl_hi, osl_lo, osl_hi), p in pairs[:10]:
     print(f"  ISL[{isl_lo},{isl_hi}) × OSL[{osl_lo},{osl_hi}) -> {p:.4f}")
+
+# ---- Arrival rate and burstiness ----
+ts_secs = np.array([datetime.fromisoformat(r["timestamp"]).timestamp() for r in rows], dtype=np.float64)
+ts_secs.sort()
+gaps = np.diff(ts_secs)
+
+mean_gap = float(np.mean(gaps))
+std_gap = float(np.std(gaps))
+cv = std_gap / mean_gap
+k = 1.0 / (cv ** 2)
+theta = mean_gap / k
+
+arrival_stats = {
+    "k": k,
+    "theta": theta,
+    "n_entries": int(len(ts_secs)),
+    "window": {
+        "start": datetime.fromtimestamp(ts_secs[0], timezone.utc).isoformat(),
+        "end": datetime.fromtimestamp(ts_secs[-1], timezone.utc).isoformat()
+    }
+}
+
+with open(ARRIVAL_OUT, "w", encoding="utf-8") as f:
+    json.dump(arrival_stats, f, indent=2)
+
+print(f"\nArrival params saved to {ARRIVAL_OUT}")
+print(f"  k     : {k:.3f}")
+print(f"  theta : {theta:.6f} s")
