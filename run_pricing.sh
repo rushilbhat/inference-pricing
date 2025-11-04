@@ -7,8 +7,8 @@ NUM_REQUESTS=30
 PORT=8000
 
 WORKLOAD_MODE="wildchat"   # or "generic"
-JOINT_PROBS_PATH="/workspace/isl_osl_jointprobs_first_1000.json"
-ARRIVAL_JSON_PATH="/workspace/wildchat_arrival_first_1000.json"
+JOINT_PROBS_PATH="/workspace/isl_osl_jointprobs_~first_1000.json"
+ARRIVAL_JSON_PATH="/workspace/wildchat_arrival_~first_1000.json"
 
 sudo docker run -d --name pricing-server \
     --runtime nvidia --gpus all \
