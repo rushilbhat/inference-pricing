@@ -1,0 +1,93 @@
+import os
+import json
+import numpy as np
+from datasets import load_dataset
+from transformers import AutoTokenizer
+
+CACHE_FILE_IN = "isl_osl_timestamp_first_1000.jsonl"
+CACHE_FILE_PROBS = "isl_osl_jointprobs_first_1000.json"
+
+ISL_BINS = [0, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+OSL_BINS = ISL_BINS
+
+# ---- Load cached 1000 rows or build them if missing ----
+if os.path.exists(CACHE_FILE_IN):
+    print(f"Loading cached data from {CACHE_FILE_IN}...")
+    with open(CACHE_FILE_IN, "r", encoding="utf-8") as f:
+        rows = [json.loads(line) for line in f]
+else:
+    print("Cache not found. Extracting from dataset...")
+
+    ds = load_dataset("allenai/WildChat-1M", split="train")
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B")
+
+    rows = []
+    count = 0
+
+    for entry in ds:
+        if entry["turn"] == 1:
+            isl = entry["conversation"][0]["content"]
+            osl = entry["conversation"][1]["content"]
+
+            ts = entry["timestamp"]
+            if not isinstance(ts, str):
+                ts = ts.isoformat()
+
+            isl_tokens = len(tokenizer.encode(isl))
+            osl_tokens = len(tokenizer.encode(osl))
+
+            rows.append({
+                "timestamp": ts,
+                "isl_tokens": isl_tokens,
+                "osl_tokens": osl_tokens,
+            })
+
+            count += 1
+            if count >= 1000:
+                break
+
+    with open(CACHE_FILE_IN, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    print(f"Saved {len(rows)} entries to {CACHE_FILE_IN}")
+
+# ---- Build 2D histogram (counts) ----
+isl_array = np.array([r["isl_tokens"] for r in rows], dtype=np.int32)
+osl_array = np.array([r["osl_tokens"] for r in rows], dtype=np.int32)
+
+H, xedges, yedges = np.histogram2d(
+    isl_array,
+    osl_array,
+    bins=[ISL_BINS, OSL_BINS]
+)
+H = H.astype(int)
+
+# ---- Joint probability matrix ----
+total = H.sum()
+P = (H / total).astype(float)
+
+probs_payload = {
+    "isl_bins": ISL_BINS,
+    "osl_bins": OSL_BINS,
+    "probabilities": P.tolist()
+}
+
+with open(CACHE_FILE_PROBS, "w", encoding="utf-8") as f:
+    json.dump(probs_payload, f, indent=2)
+
+print(f"Joint probability matrix saved to {CACHE_FILE_PROBS}")
+
+# ---- Sanity check: top 10 bins by probability ----
+nonzero = np.argwhere(H > 0)
+pairs = []
+for i, j in nonzero:
+    prob = float(P[i, j])
+    isl_lo, isl_hi = ISL_BINS[i], ISL_BINS[i + 1]
+    osl_lo, osl_hi = OSL_BINS[j], OSL_BINS[j + 1]
+    pairs.append(((isl_lo, isl_hi, osl_lo, osl_hi), prob))
+
+pairs.sort(key=lambda x: x[1], reverse=True)
+print("\nTop (ISL_bin, OSL_bin) probabilities:")
+for (isl_lo, isl_hi, osl_lo, osl_hi), p in pairs[:10]:
+    print(f"  ISL[{isl_lo},{isl_hi}) × OSL[{osl_lo},{osl_hi}) -> {p:.4f}")

@@ -8,12 +8,6 @@ import asyncio
 import aiohttp
 from transformers import AutoTokenizer
 
-WORKLOADS = [
-    (1024, 1024),  # chat
-    (1024, 8192),  # reasoning
-    (8192, 1024),  # summarising
-]
-
 def wait_for_server(base_url: str = "http://localhost:8000", timeout: int = 300):
     """Wait for vLLM server to be ready"""
     start_time = time.time()
@@ -27,15 +21,56 @@ def wait_for_server(base_url: str = "http://localhost:8000", timeout: int = 300)
         time.sleep(2)
     raise TimeoutError("vLLM server did not start within timeout period")
 
+# ----------------------------
+# Prompt gen 
+# ----------------------------
+
+def load_joint_probs(path):
+    with open(path, "r", encoding="utf-8") as f:
+        obj = json.load(f)
+    isl_bins = obj["isl_bins"]
+    osl_bins = obj["osl_bins"]
+    P = np.array(obj["probabilities"], dtype=float)
+    return isl_bins, osl_bins, P
+
 def generate_random_prompt(tokenizer, num_tokens: int) -> str:
-    """Generate a random prompt by sampling random token IDs and detokenizing"""
     vocab_size = tokenizer.vocab_size
     random_token_ids = np.random.randint(0, vocab_size, size=num_tokens)
     prompt = tokenizer.decode(random_token_ids, skip_special_tokens=True)
     return prompt
 
+def bin_midpoints(edges):
+    mids = []
+    for i in range(len(edges) - 1):
+        lo, hi = edges[i], edges[i + 1]
+        mids.append((lo + hi) // 2)
+    return mids
+
+def make_sampler_generic(workloads):
+    """Uniform sampler over fixed (isl, osl) tuples."""
+    def sampler():
+        return workloads[np.random.randint(0, len(workloads))]
+    return sampler
+
+def make_sampler_wildchat(isl_bins, osl_bins, P):
+    """Sample a (bin_i, bin_j) by probability, return (isl_mid, osl_mid)."""
+    isl_mids = bin_midpoints(isl_bins)
+    osl_mids = bin_midpoints(osl_bins)
+    flat = P.ravel()
+    idx = np.arange(flat.size)
+    W = P.shape[1]
+
+    def sampler():
+        k = np.random.choice(idx, p=flat)
+        i, j = divmod(k, W)                 # map 1D index -> (row i, col j)
+        return isl_mids[i], osl_mids[j]
+    return sampler
+
+# ----------------------------
+# Inference call
+# ----------------------------
+
 async def send_request(session, base_url, model, prompt, osl, request_id):
-    """Send a single async request"""
     payload = {
         "model": model,
         "prompt": prompt,
@@ -61,38 +96,43 @@ async def send_request(session, base_url, model, prompt, osl, request_id):
     except Exception as e:
         print(f"  Error in request {request_id}: {e}")
         return 0, 0
+    
+
+def get_prompt_for_isl(tokenizer, cache, isl):
+    """Return a cached random prompt of isl tokens, generating if needed."""
+    p = cache.get(isl)
+    if p is None:
+        p = generate_random_prompt(tokenizer, isl)
+        cache[isl] = p
+    return p
+
+# ----------------------------
+# Benchmark loop
+# ----------------------------
 
 async def benchmark_throughput(
     base_url: str,
     model: str,
     num_requests: int,
     arrival_rate: float,
-    arrival_burstiness: float
+    arrival_burstiness: float,
+    sampler
 ) -> float:
-    """Benchmark the model and return throughput in tokens/second"""    
     print(f"\nBenchmarking with {num_requests} requests...")
-    print("  Mixed workloads (equal probability):")
-    print("   - 1024 ISL / 1024 OSL (chat)")
-    print("   - 1024 ISL / 8192 OSL (reasoning)")
-    print("   - 8192 ISL / 1024 OSL (summarising)\n")
     print("")
 
     tokenizer = AutoTokenizer.from_pretrained(model)
 
-    # Pre-generate one prompt per distinct ISL to avoid re-decoding every time
-    distinct_isl = sorted({isl for isl, _ in WORKLOADS})
-    prompts_by_isl = {isl: generate_random_prompt(tokenizer, isl) for isl in distinct_isl}
+    # Lazy prompt cache keyed by ISL
+    prompts_by_isl = {}
 
-    # Record overall start time
     overall_start = time.time()
-    
-    # Send all requests asynchronously
     async with aiohttp.ClientSession() as session:
         tasks = []
         for i in range(num_requests):
-            # Equal probability pick of workload
-            isl, osl = WORKLOADS[np.random.randint(0, len(WORKLOADS))]
-            prompt = prompts_by_isl[isl]
+            isl, osl = sampler()
+            prompt = get_prompt_for_isl(tokenizer, prompts_by_isl, int(isl))
+
             if arrival_rate > 0 and i > 0:
                 k = max(arrival_burstiness, 1e-6)
                 theta = 1.0 / (arrival_rate * k)
@@ -106,14 +146,16 @@ async def benchmark_throughput(
     
     overall_end = time.time()
     
-    # Calculate totals
     total_tokens = sum(tokens for tokens, _ in results)
     total_time = overall_end - overall_start
     throughput = total_tokens / total_time
     return throughput
 
+# ----------------------------
+# Pricing
+# ----------------------------
+
 def calculate_pricing(throughput: float, gpu_cost_per_hour: float):
-    """Calculate pricing based on throughput and GPU cost"""
     tokens_per_hour = throughput * 3600
     cost_per_token = gpu_cost_per_hour / tokens_per_hour
     
@@ -125,8 +167,11 @@ def calculate_pricing(throughput: float, gpu_cost_per_hour: float):
         "cost_per_1m_tokens": cost_per_token * 1000000,
     }
 
+# ----------------------------
+# Entrypoint
+# ----------------------------
+
 def main():
-    # Read configuration from environment variables
     model = os.environ.get('MODEL')
     gpu_type = os.environ.get('GPU_TYPE')
     gpu_cost = float(os.environ.get('GPU_COST'))
@@ -134,10 +179,8 @@ def main():
     arrival_rate = float(os.environ.get('ARRIVAL_RATE'))
     arrival_burstiness = float(os.environ.get('ARRIVAL_BURSTINESS'))
     port = os.environ.get('PORT')
-    
     base_url = f"http://localhost:{port}"
     
-    # Wait for server to be ready
     wait_for_server(base_url)
     
     # Display config
@@ -145,17 +188,35 @@ def main():
     print(f"Model: {model}")
     print(f"GPU: {gpu_type} (${gpu_cost}/hour)")
     print(f"{'='*60}")
+
+    mode = os.environ.get("WORKLOAD_MODE", "generic").lower()
+
+    if mode == "generic":
+        workloads = [
+            (1024, 1024),  # chat
+            (1024, 8192),  # reasoning
+            (8192, 1024),  # summarising
+        ]
+        sampler = make_sampler_generic(workloads)
+    elif mode == "wildchat":
+        joint_probs_path = os.environ.get("JOINT_PROBS_PATH")
+        if not joint_probs_path or not os.path.exists(joint_probs_path):
+            raise FileNotFoundError("WORKLOAD_MODE=wildchat but JOINT_PROBS_PATH is missing.")
+        isl_bins, osl_bins, P = load_joint_probs(joint_probs_path)
+        sampler = make_sampler_wildchat(isl_bins, osl_bins, P)
+    else:
+        raise ValueError(f"Unknown WORKLOAD_MODE: {mode}")
+
     
-    # Benchmark throughput
     throughput = asyncio.run(benchmark_throughput(
         base_url=base_url,
         model=model,
         num_requests=num_requests,
         arrival_rate=arrival_rate,
-        arrival_burstiness=arrival_burstiness
+        arrival_burstiness=arrival_burstiness,
+        sampler=sampler
     ))
     
-    # Calculate pricing
     pricing = calculate_pricing(throughput, gpu_cost)
     
     # Display results
@@ -169,27 +230,6 @@ def main():
     print(f"  Per 1K tokens: ${pricing['cost_per_1k_tokens']:.8f}")
     print(f"  Per 1M tokens: ${pricing['cost_per_1m_tokens']:.4f}")
     print(f"{'='*60}")
-    
-    # Save results to JSON
-    results = {
-        "model": model,
-        "gpu_type": gpu_type,
-        "gpu_cost_per_hour": gpu_cost,
-        "benchmark_config": {
-            "workloads": [
-                {"input_tokens": isl, "output_tokens": osl} for isl, osl in WORKLOADS
-            ],
-            "num_requests": num_requests,
-            "arrival_rate": arrival_rate,
-            "arrival_burstiness": arrival_burstiness
-        },
-        "pricing": pricing
-    }
-    
-    with open('/workspace/pricing_results.json', 'w') as f:
-        json.dump(results, f, indent=2)
-    
-    print(f"\nResults saved to: pricing_results.json")
 
 if __name__ == "__main__":
     main()
