@@ -5,9 +5,9 @@ from datasets import load_dataset
 from transformers import AutoTokenizer
 from datetime import datetime, timezone
 
-CACHE_FILE_IN = "isl_osl_timestamp_first_1000.jsonl"
-CACHE_FILE_PROBS = "isl_osl_jointprobs_first_1000.json"
-ARRIVAL_OUT = "wildchat_arrival_first_1000.json"
+CACHE_FILE_IN = "isl_osl_timestamp_~first_1000.jsonl"
+CACHE_FILE_PROBS = "isl_osl_jointprobs_~first_1000.json"
+ARRIVAL_OUT = "wildchat_arrival_~first_1000.json"
 
 ISL_BINS = [0, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 OSL_BINS = ISL_BINS
@@ -24,29 +24,22 @@ else:
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B")
 
     rows = []
-    count = 0
-
     for entry in ds:
-        if entry["turn"] == 1:
-            isl = entry["conversation"][0]["content"]
-            osl = entry["conversation"][1]["content"]
-
-            ts = entry["timestamp"]
-            if not isinstance(ts, str):
-                ts = ts.isoformat()
-
-            isl_tokens = len(tokenizer.encode(isl))
-            osl_tokens = len(tokenizer.encode(osl))
-
-            rows.append({
-                "timestamp": ts,
-                "isl_tokens": isl_tokens,
-                "osl_tokens": osl_tokens,
-            })
-
-            count += 1
-            if count >= 1000:
-                break
+        if len(rows) > 1000:
+            break
+        conversation = entry["conversation"]
+        for i in range(0, len(conversation) - 1, 2):
+            if conversation[i]["role"] == "user" and conversation[i+1]["role"] == "assistant":
+                ts = conversation[i+1]["timestamp"]
+                isl = conversation[i]["content"]
+                osl = conversation[i+1]["content"]
+                isl_tokens = len(tokenizer.encode(isl))
+                osl_tokens = len(tokenizer.encode(osl))
+                rows.append({
+                    "timestamp": ts.isoformat(),
+                    "isl_tokens": isl_tokens,
+                    "osl_tokens": osl_tokens,
+                })
 
     with open(CACHE_FILE_IN, "w", encoding="utf-8") as f:
         for r in rows:
