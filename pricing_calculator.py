@@ -108,7 +108,6 @@ async def send_request(session, base_url, model, prompt, osl, request_id):
                         first_arrival = now
                         isl = len(obj["choices"][0]["prompt_token_ids"])
                     last_arrival = now
-                # ended = time.perf_counter()
                 prefill = first_arrival - started
                 decode = last_arrival - first_arrival
                 print(f"  Request {request_id}: Prefill time: {prefill}, Decode time: {decode}, Input tokens: {isl}, Output tokens: {osl}")
@@ -143,7 +142,8 @@ async def benchmark_throughput(
     total_in_tok = total_out_tok = 0
     total_prefill = total_decode = 0.0
 
-    async with aiohttp.ClientSession() as session:
+    connector = aiohttp.TCPConnector(limit=0, limit_per_host=0)
+    async with aiohttp.ClientSession(connector=connector) as session:
         tasks = []
         for i in range(num_requests):
             isl, osl = sampler()
