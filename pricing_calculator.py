@@ -85,18 +85,34 @@ async def send_request(session, base_url, model, prompt, osl, request_id):
         "temperature": 0.0,
         "stop": [],
         "ignore_eos": True,
+        "stream": True,
     }
     
-    start_time = time.time()
+    started = time.perf_counter()
+    first_arrival = None
+    last_arrival = None
+
     try:
         async with session.post(f"{base_url}/v1/completions", json=payload, timeout=120) as response:
-            end_time = time.time()
             if response.status == 200:
-                result = await response.json()
-                tokens_input = result['usage']['prompt_tokens']
-                tokens_generated = result['usage']['completion_tokens']
-                print(f"  Request {request_id}: Input tokens: {tokens_input}, Output tokens: {tokens_generated}")
-                return tokens_generated, end_time - start_time
+                async for line in response.content:
+                    data = line.decode('utf-8').strip()[6:]  # Remove 'data: ' prefix
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    now = time.perf_counter()
+                    if first_arrival is None:
+                        first_arrival = now
+                        isl = len(obj["choices"][0]["prompt_token_ids"])
+                    last_arrival = now
+                # ended = time.perf_counter()
+                prefill = first_arrival - started
+                decode = last_arrival - first_arrival
+                print(f"  Request {request_id}: Prefill time: {prefill}, Decode time: {decode}, Input tokens: {isl}, Output tokens: {osl}")
+                return prefill, decode
             else:
                 print(f"  Warning: Request {request_id} failed with status {response.status}")
                 return 0, 0
@@ -124,7 +140,9 @@ async def benchmark_throughput(
     # Lazy prompt cache keyed by ISL
     prompts_by_isl = {}
 
-    overall_start = time.time()
+    total_in_tok = total_out_tok = 0
+    total_prefill = total_decode = 0.0
+
     async with aiohttp.ClientSession() as session:
         tasks = []
         for i in range(num_requests):
@@ -139,29 +157,37 @@ async def benchmark_throughput(
                 send_request(session, base_url, model, prompt, osl, i + 1)
             ))
 
+            total_in_tok += isl
+            total_out_tok += osl
+
         results = await asyncio.gather(*tasks)
     
-    overall_end = time.time()
+    for (prefill, decode) in results:
+        total_prefill += prefill
+        total_decode += decode
     
-    total_tokens = sum(tokens for tokens, _ in results)
-    total_time = overall_end - overall_start
-    throughput = total_tokens / total_time
-    return throughput
+    tps_in = total_in_tok / total_prefill
+    tps_out = total_out_tok / total_decode
+    return tps_in, tps_out
 
 # ----------------------------
 # Pricing
 # ----------------------------
 
-def calculate_pricing(throughput: float, gpu_cost_per_hour: float):
-    tokens_per_hour = throughput * 3600
-    cost_per_token = gpu_cost_per_hour / tokens_per_hour
-    
+def calculate_pricing(tps_in: float, tps_out: float, gpu_cost_per_hour: float):
+    gpu_cost_per_sec = gpu_cost_per_hour / 3600.0
+    price_in_tok = gpu_cost_per_sec / tps_in
+    price_out_tok = gpu_cost_per_sec / tps_out
+
     return {
-        "throughput_tokens_per_sec": throughput,
-        "tokens_per_hour": tokens_per_hour,
-        "cost_per_token": cost_per_token,
-        "cost_per_1k_tokens": cost_per_token * 1000,
-        "cost_per_1m_tokens": cost_per_token * 1000000,
+        "tps_in": tps_in,
+        "tps_out": tps_out,
+        "cost_per_input_token": price_in_tok,
+        "cost_per_output_token": price_out_tok,
+        "cost_per_1k_input_tokens": price_in_tok * 1_000,
+        "cost_per_1k_output_tokens": price_out_tok * 1_000,
+        "cost_per_1m_input_tokens": price_in_tok * 1_000_000,
+        "cost_per_1m_output_tokens": price_out_tok * 1_000_000
     }
 
 # ----------------------------
@@ -208,7 +234,7 @@ def main():
         k, theta = load_arrival_k_theta(arrival_json_path)
         print(f"Loaded arrival params from {arrival_json_path}: k={k:.3f}, theta={theta:.6f}s")
     
-    throughput = asyncio.run(benchmark_throughput(
+    (tps_in, tps_out) = asyncio.run(benchmark_throughput(
         base_url=base_url,
         model=model,
         num_requests=num_requests,
@@ -217,18 +243,22 @@ def main():
         theta=theta
     ))
     
-    pricing = calculate_pricing(throughput, gpu_cost)
+    pricing = calculate_pricing(tps_in, tps_out, gpu_cost)
     
     # Display results
     print(f"\n{'='*60}")
     print("RESULTS")
     print(f"{'='*60}")
-    print(f"Throughput: {pricing['throughput_tokens_per_sec']:.2f} tokens/second")
-    print(f"Tokens per hour: {pricing['tokens_per_hour']:.0f}")
+    print(f"Throughput:in={tps_in:.2f} tok/s | out={tps_out:.2f} tok/s")
     print(f"\nPRICING:")
-    print(f"  Per token:     ${pricing['cost_per_token']:.10f}")
-    print(f"  Per 1K tokens: ${pricing['cost_per_1k_tokens']:.8f}")
-    print(f"  Per 1M tokens: ${pricing['cost_per_1m_tokens']:.4f}")
+    print(f"  Input tokens:")
+    print(f"    Per token:     ${pricing['cost_per_input_token']:.10f}")
+    print(f"    Per 1K tokens: ${pricing['cost_per_1k_input_tokens']:.8f}")
+    print(f"    Per 1M tokens: ${pricing['cost_per_1m_input_tokens']:.4f}")
+    print(f"  Output tokens:")
+    print(f"    Per token:     ${pricing['cost_per_output_token']:.10f}")
+    print(f"    Per 1K tokens: ${pricing['cost_per_1k_output_tokens']:.8f}")
+    print(f"    Per 1M tokens: ${pricing['cost_per_1m_output_tokens']:.4f}")
     print(f"{'='*60}")
 
 if __name__ == "__main__":
