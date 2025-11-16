@@ -6,8 +6,7 @@ from transformers import AutoTokenizer
 from datetime import datetime, timezone
 
 CACHE_FILE_IN = "isl_osl_timestamp_~first_1000.jsonl"
-CACHE_FILE_PROBS = "isl_osl_jointprobs_~first_1000.json"
-ARRIVAL_OUT = "wildchat_arrival_~first_1000.json"
+WORKLOAD_STATS_OUT = "wildchat_workload_~first_1000.json"
 
 ISL_BINS = [0, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 OSL_BINS = ISL_BINS
@@ -62,17 +61,6 @@ H = H.astype(int)
 total = H.sum()
 P = (H / total).astype(float)
 
-probs_payload = {
-    "isl_bins": ISL_BINS,
-    "osl_bins": OSL_BINS,
-    "probabilities": P.tolist()
-}
-
-with open(CACHE_FILE_PROBS, "w", encoding="utf-8") as f:
-    json.dump(probs_payload, f, indent=2)
-
-print(f"Joint probability matrix saved to {CACHE_FILE_PROBS}")
-
 # ---- Sanity check: top 10 bins by probability ----
 nonzero = np.argwhere(H > 0)
 pairs = []
@@ -98,19 +86,23 @@ cv = std_gap / mean_gap
 k = 1.0 / (cv ** 2)
 theta = mean_gap / k
 
-arrival_stats = {
-    "k": k,
-    "theta": theta,
-    "n_entries": int(len(ts_secs)),
-    "window": {
-        "start": datetime.fromtimestamp(ts_secs[0], timezone.utc).isoformat(),
-        "end": datetime.fromtimestamp(ts_secs[-1], timezone.utc).isoformat()
-    }
+print(f"\nArrival parameters: k={k:.4f}, theta={theta:.6f}s")
+
+# ---- Save workload stats ----
+workload_stats = {
+    "isl_bins": ISL_BINS,
+    "osl_bins": OSL_BINS,
+    "probabilities": P.tolist(),
+
+    "arrival_k": k,
+    "arrival_theta": theta,
+
+    "n_entries": len(rows),
+    "window_start": datetime.fromtimestamp(ts_secs[0], timezone.utc).isoformat(),
+    "window_end": datetime.fromtimestamp(ts_secs[-1], timezone.utc).isoformat()
 }
 
-with open(ARRIVAL_OUT, "w", encoding="utf-8") as f:
-    json.dump(arrival_stats, f, indent=2)
+with open(WORKLOAD_STATS_OUT, "w", encoding="utf-8") as f:
+    json.dump(workload_stats, f, indent=2)
 
-print(f"\nArrival params saved to {ARRIVAL_OUT}")
-print(f"  k     : {k:.3f}")
-print(f"  theta : {theta:.6f} s")
+print(f"\nSaved workload JSON → {WORKLOAD_STATS_OUT}")
