@@ -30,10 +30,18 @@ CLIENT_CMD="pip install -q requests transformers numpy aiohttp datasets; "
 
 if [[ "$WORKLOAD_MODE" == "wildchat" ]]; then
     WORKLOAD_STATS_PATH="/workspace/wildchat_workload_~first_1000.json"
-    env_args+=(-e WORKLOAD_STATS_PATH="$WORKLOAD_STATS_PATH")
-    CLIENT_CMD+="python3 process_wildchat.py \"$WORKLOAD_STATS_PATH\"; "
+    WORKLOAD_CALIB_PATH="/workspace/wildchat_calibration_~first_1000.json"
+
+    env_args+=(
+        -e WORKLOAD_STATS_PATH="$WORKLOAD_STATS_PATH"
+        -e WORKLOAD_CALIB_PATH="$WORKLOAD_CALIB_PATH"
+    )
+
+    CLIENT_CMD+="python3 process_wildchat.py; "
+    CLIENT_CMD+="python3 calibrate_workload.py; "
+
 else
-    CLIENT_CMD+="echo 'Skipping process_wildchat.py (generic workload)'; "
+    CLIENT_CMD+="echo 'Skipping process_wildchat.py and calibration (generic workload)'; "
 fi
 
 CLIENT_CMD+="python3 pricing_calculator.py"

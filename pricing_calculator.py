@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import requests
 import time
 import json
 import os
@@ -8,45 +7,12 @@ import asyncio
 import aiohttp
 from transformers import AutoTokenizer
 
-def wait_for_server(base_url, timeout = 300):
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        try:
-            response = requests.get(f"{base_url}/v1/models", timeout=5)
-            if response.status_code == 200:
-                return True
-        except requests.exceptions.RequestException:
-            pass
-        time.sleep(2)
-    raise TimeoutError("vLLM server did not start within timeout period")
-
-# ----------------------------
-# Workload stats loader
-# ----------------------------
-def load_wildchat_workload(path):
-    with open(path, "r", encoding="utf-8") as f:
-        obj = json.load(f)
-
-    isl_bins = obj["isl_bins"]
-    osl_bins = obj["osl_bins"]
-    P = np.array(obj["probabilities"], dtype=float)
-
-    k = float(obj["arrival_k"])
-    theta = float(obj["arrival_theta"])
-
-    return isl_bins, osl_bins, P, k, theta
-
-# ----------------------------
-# Prompt utils 
-# ----------------------------
-def generate_random_prompt(tokenizer, num_tokens):
-    vocab_size = tokenizer.vocab_size
-    random_token_ids = np.random.randint(0, vocab_size, size=num_tokens)
-    prompt = tokenizer.decode(random_token_ids, skip_special_tokens=True)
-    return prompt
-
-def bin_midpoints(edges):
-    return [(edges[i] + edges[i+1]) // 2 for i in range(len(edges)-1)]
+from utils import (
+    wait_for_server,
+    load_wildchat_workload,
+    bin_midpoints,
+    generate_random_prompt,
+)
 
 def make_sampler_wildchat(isl_bins, osl_bins, P):
     """Sample a (bin_i, bin_j) by probability, return (isl_mid, osl_mid)."""
@@ -115,36 +81,72 @@ async def send_request(session, base_url, model, prompt, osl, request_id):
 # ----------------------------
 # Benchmark loop
 # ----------------------------
-async def benchmark_throughput(base_url, model, num_requests, sampler, k, theta):
+async def benchmark_throughput(base_url, model, num_requests, sampler, k, theta, concurrency_cap=None):
     print(f"\nBenchmarking with {num_requests} requests...")
     print("")
 
     tokenizer = AutoTokenizer.from_pretrained(model)
     prompts = {} # Prompt cache keyed by ISL
 
+    jobs = []
     total_in_tok = total_out_tok = 0
+    for _ in range(num_requests):
+        isl, osl = sampler()
+        jobs.append((isl, osl))
+        total_in_tok += isl
+        total_out_tok += osl
+        if isl not in prompts:
+            prompts[isl] = generate_random_prompt(tokenizer, isl)
+
     total_prefill = total_decode = 0.0
 
     connector = aiohttp.TCPConnector(limit=0, limit_per_host=0)
     async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = []
-        for i in range(num_requests):
-            isl, osl = sampler()
-            if isl not in prompts:
-                prompts[isl] = generate_random_prompt(tokenizer, isl)
+        # Case 1: concurrency cap (wildchat, calibrated)
+        if concurrency_cap is not None:
+            K = min(concurrency_cap, num_requests)
+            in_flight = set()
+            results = []
+            next_idx = 0
 
-            # If k & theta provided, add gaps; else fire immediately
-            if (k is not None) and (theta is not None) and i > 0:
-                gap = np.random.gamma(shape=k, scale=theta)
-                await asyncio.sleep(gap)
-            tasks.append(asyncio.create_task(
-                send_request(session, base_url, model, prompts[isl], osl, i + 1)
-            ))
+            # Fill the pipeline
+            while len(in_flight) < K:
+                isl, osl = jobs[next_idx]
+                prompt = prompts[isl]
+                task = asyncio.create_task(
+                    send_request(session, base_url, model, prompt, osl, next_idx + 1)
+                )
+                in_flight.add(task)
+                next_idx += 1
 
-            total_in_tok += isl
-            total_out_tok += osl
+            # Closed-loop: whenever one finishes, start another
+            while in_flight:
+                done, in_flight = await asyncio.wait(
+                    in_flight, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    results.append(task.result())
+                    if next_idx < num_requests:
+                        isl, osl = jobs[next_idx]
+                        prompt = prompts[isl]
+                        in_flight.add(
+                            asyncio.create_task(
+                                send_request(session, base_url, model, prompt, osl, next_idx + 1)
+                            )
+                        )
+                        next_idx += 1
 
-        results = await asyncio.gather(*tasks)
+        # Case 2: original gap-based open-loop (used only when not wildchat)
+        else:
+            tasks = []
+            for idx, (isl, osl) in enumerate(jobs):
+                if (k is not None) and (theta is not None) and idx > 0:
+                    gap = np.random.gamma(shape=k, scale=theta)
+                    await asyncio.sleep(gap)
+                tasks.append(asyncio.create_task(
+                    send_request(session, base_url, model, prompts[isl], osl, idx + 1)
+                ))
+            results = await asyncio.gather(*tasks)
     
     for (prefill, decode) in results:
         total_prefill += prefill
@@ -208,15 +210,25 @@ def main():
         workload_stats_path = os.environ.get("WORKLOAD_STATS_PATH")
         if not workload_stats_path or not os.path.exists(workload_stats_path):
             raise FileNotFoundError("WORKLOAD_STATS_PATH is missing.")
+        
+        calib_path = os.environ.get("WORKLOAD_CALIB_PATH")
+        if not calib_path or not os.path.exists(calib_path):
+            raise FileNotFoundError("WORKLOAD_CALIB_PATH is missing.")
 
         isl_bins, osl_bins, P, k, theta = load_wildchat_workload(workload_stats_path)
         sampler = make_sampler_wildchat(isl_bins, osl_bins, P)
+
+        with open(calib_path, "r", encoding="utf-8") as f:
+            calib = json.load(f)
+        concurrency_cap = int(calib["concurrency_cap"])
+        print(f"Using calibrated concurrency cap (wildchat): {concurrency_cap}")
+
     else:
         raise ValueError(f"Unknown WORKLOAD_MODE: {mode}")
      
     (tps_in, tps_out) = asyncio.run(
-        benchmark_throughput(base_url, model, num_requests, sampler, k, theta
-    ))
+        benchmark_throughput(base_url, model, num_requests, sampler, k, theta, concurrency_cap)
+    )
     
     pricing = calculate_pricing(tps_in, tps_out, gpu_cost)
     
