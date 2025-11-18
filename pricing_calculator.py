@@ -53,7 +53,15 @@ async def send_request(session, base_url, model, prompt, osl, request_id):
         print(f"  Error in request {request_id}: {e}")
         return 0, 0
 
-async def benchmark_throughput(base_url, model, num_requests, isl_toks, osl_toks, concurrency_cap=None):
+async def benchmark_throughput(
+    base_url,
+    model,
+    num_requests,
+    isl_toks,
+    osl_toks,
+    concurrency_cap=None,
+    warmup_requests=5,
+):
     print(f"\nBenchmarking with {num_requests} requests...")
     print("")
 
@@ -66,6 +74,18 @@ async def benchmark_throughput(base_url, model, num_requests, isl_toks, osl_toks
 
     connector = aiohttp.TCPConnector(limit=0, limit_per_host=0)
     async with aiohttp.ClientSession(connector=connector) as session:
+        warmup_count = min(warmup_requests, num_requests)
+        if warmup_count > 0:
+            for i in range(warmup_count):
+                await send_request(
+                    session,
+                    base_url,
+                    model,
+                    prompt,
+                    osl_toks,
+                    request_id=f"warmup-{i + 1}",
+                )
+
         K = min(concurrency_cap, num_requests)
         in_flight = set()
         results = []
