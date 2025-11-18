@@ -11,6 +11,7 @@ from utils import (
     wait_for_server,
     load_wildchat_workload,
     generate_random_prompt,
+    WARMUP_REQUESTS
 )
 
 async def send_request_cal(session, base_url, model, prompt, osl):
@@ -44,6 +45,15 @@ async def estimate_avg_response_time(base_url, model, isl_toks, osl_toks, sample
     durations = []
     async with aiohttp.ClientSession() as session:
         print(f"Sampling response time at ISL={isl_toks}, OSL={osl_toks}")
+        for _ in range(WARMUP_REQUESTS):
+            await send_request_cal(
+                session=session,
+                base_url=base_url,
+                model=model,
+                prompt=prompt,
+                osl=osl_toks,
+            )
+
         for s in range(samples):
             dur = await send_request_cal(
                 session=session,
@@ -86,6 +96,7 @@ def main():
             isl_toks=avg_isl,
             osl_toks=avg_osl,
             samples=3,
+            warmup_requests=5,
         )
     )
     print(f"\nEstimated avg response time: {avg_R:.3f} s")

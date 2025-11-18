@@ -10,6 +10,7 @@ from utils import (
     wait_for_server,
     load_wildchat_workload,
     generate_random_prompt,
+    WARMUP_REQUESTS,
 )
 
 async def send_request(session, base_url, model, prompt, osl, request_id):
@@ -60,7 +61,6 @@ async def benchmark_throughput(
     isl_toks,
     osl_toks,
     concurrency_cap=None,
-    warmup_requests=5,
 ):
     print(f"\nBenchmarking with {num_requests} requests...")
     print("")
@@ -74,17 +74,15 @@ async def benchmark_throughput(
 
     connector = aiohttp.TCPConnector(limit=0, limit_per_host=0)
     async with aiohttp.ClientSession(connector=connector) as session:
-        warmup_count = min(warmup_requests, num_requests)
-        if warmup_count > 0:
-            for i in range(warmup_count):
-                await send_request(
-                    session,
-                    base_url,
-                    model,
-                    prompt,
-                    osl_toks,
-                    request_id=f"warmup-{i + 1}",
-                )
+        for i in range(WARMUP_REQUESTS):
+            await send_request(
+                session,
+                base_url,
+                model,
+                prompt,
+                osl_toks,
+                request_id=f"warmup-{i + 1}",
+            )
 
         K = min(concurrency_cap, num_requests)
         in_flight = set()
@@ -122,10 +120,10 @@ async def benchmark_throughput(
     tps_out = (osl_toks * num_requests) / total_decode
     return tps_in, tps_out
 
-def calculate_pricing(tps_in, tps_out, gpu_cost_per_hour):
+def calculate_pricing(tps_in, tps_out, util, gpu_cost_per_hour):
     gpu_cost_per_sec = gpu_cost_per_hour / 3600.0
-    price_in_tok = gpu_cost_per_sec / tps_in
-    price_out_tok = gpu_cost_per_sec / tps_out
+    price_in_tok = gpu_cost_per_sec / (util * tps_in)
+    price_out_tok = gpu_cost_per_sec / (util * tps_out)
 
     return {
         "tps_in": tps_in,
@@ -162,13 +160,14 @@ def main():
     with open(calib_path, "r", encoding="utf-8") as f:
         calib = json.load(f)
     concurrency_cap = int(calib["concurrency_cap"])
+    natural_conc = float(calib["natural_concurrency"])
     print(f"Using calibrated concurrency cap: {concurrency_cap}")
      
     (tps_in, tps_out) = asyncio.run(
         benchmark_throughput(base_url, model, num_requests, avg_isl, avg_osl, concurrency_cap)
     )
-    
-    pricing = calculate_pricing(tps_in, tps_out, gpu_cost)
+    util = min(1.0, natural_conc)
+    pricing = calculate_pricing(tps_in, tps_out, util, gpu_cost)
     
     # Display results
     print(f"\n{'='*60}")

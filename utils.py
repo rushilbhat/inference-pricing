@@ -3,6 +3,7 @@ import time
 import requests
 import numpy as np
 
+WARMUP_REQUESTS = 5
 
 def wait_for_server(base_url, timeout=300):
     start_time = time.time()
