@@ -21,14 +21,12 @@ def load_wildchat_workload(path):
     with open(path, "r", encoding="utf-8") as f:
         obj = json.load(f)
 
-    isl_bins = obj["isl_bins"]
-    osl_bins = obj["osl_bins"]
-    P = np.array(obj["probabilities"], dtype=float)
+    avg_isl = obj["avg_isl"]
+    avg_osl = obj["avg_osl"]
+    mean_gap_seconds = obj["mean_gap_seconds"]
+    arrival_rate_per_second = obj["arrival_rate_per_second"]
 
-    k = float(obj["arrival_k"])
-    theta = float(obj["arrival_theta"])
-
-    return isl_bins, osl_bins, P, k, theta
+    return avg_isl, avg_osl, mean_gap_seconds, arrival_rate_per_second
 
 
 def bin_midpoints(edges):
@@ -39,4 +37,3 @@ def generate_random_prompt(tokenizer, num_tokens):
     vocab_size = tokenizer.vocab_size
     random_token_ids = np.random.randint(0, vocab_size, size=num_tokens)
     return tokenizer.decode(random_token_ids, skip_special_tokens=True)
-

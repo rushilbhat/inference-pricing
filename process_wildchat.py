@@ -75,27 +75,37 @@ print("\nTop (ISL_bin, OSL_bin) probabilities:")
 for (isl_lo, isl_hi, osl_lo, osl_hi), p in pairs[:10]:
     print(f"  ISL[{isl_lo},{isl_hi}) × OSL[{osl_lo},{osl_hi}) -> {p:.4f}")
 
-# ---- Arrival rate and burstiness ----
+# ---- Average ISL/OSL tokens ----
+isl_mids = 0.5 * (np.array(ISL_BINS[1:]) + np.array(ISL_BINS[:-1]))
+osl_mids = 0.5 * (np.array(OSL_BINS[1:]) + np.array(OSL_BINS[:-1]))
+
+P_isl = P.sum(axis=1)
+P_osl = P.sum(axis=0)
+
+avg_isl = round(float((isl_mids * P_isl).sum()))
+avg_osl = round(float((osl_mids * P_osl).sum()))
+
+print(f"\nAverage ISL (tokens) = {avg_isl}")
+print(f"Average OSL (tokens) = {avg_osl}")
+
+# ---- Arrival rate ----
 ts_secs = np.array([datetime.fromisoformat(r["timestamp"]).timestamp() for r in rows], dtype=np.float64)
 ts_secs.sort()
 gaps = np.diff(ts_secs)
 
 mean_gap = float(np.mean(gaps))
-std_gap = float(np.std(gaps))
-cv = std_gap / mean_gap
-k = 1.0 / (cv ** 2)
-theta = mean_gap / k
+arrival_rate = float(1.0 / mean_gap) if mean_gap > 0 else float("inf")
 
-print(f"\nArrival parameters: k={k:.4f}, theta={theta:.6f}s")
+print(f"\nMean inter-arrival gap: {mean_gap:.6f}s")
+print(f"Arrival rate: {arrival_rate:.6f} per second")
 
 # ---- Save workload stats ----
 workload_stats = {
-    "isl_bins": ISL_BINS,
-    "osl_bins": OSL_BINS,
-    "probabilities": P.tolist(),
+    "avg_isl": avg_isl,
+    "avg_osl": avg_osl,
 
-    "arrival_k": k,
-    "arrival_theta": theta,
+    "mean_gap_seconds": mean_gap,
+    "arrival_rate_per_second": arrival_rate,
 
     "n_entries": len(rows),
     "window_start": datetime.fromtimestamp(ts_secs[0], timezone.utc).isoformat(),

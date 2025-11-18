@@ -10,13 +10,8 @@ from transformers import AutoTokenizer
 from utils import (
     wait_for_server,
     load_wildchat_workload,
-    bin_midpoints,
     generate_random_prompt,
 )
-
-# ----------------------------
-# Calibration request (non-streaming, simple)
-# ----------------------------
 
 async def send_request_cal(session, base_url, model, prompt, osl):
     payload = {
@@ -42,53 +37,30 @@ async def send_request_cal(session, base_url, model, prompt, osl):
         print(f" Error: {e}")
         return 0.0
 
-# ----------------------------
-# Bin-based average response time
-# ----------------------------
-
-async def estimate_avg_response_time(base_url, model, isl_bins, osl_bins, P, samples_per_bin):
-    isl_mids = bin_midpoints(isl_bins)
-    osl_mids = bin_midpoints(osl_bins)
-
+async def estimate_avg_response_time(base_url, model, isl_toks, osl_toks, samples):
     tokenizer = AutoTokenizer.from_pretrained(model)
-    prompts_by_isl = {}
+    prompt = generate_random_prompt(tokenizer, isl_toks)
 
-    total_weighted_R = 0.0
-
+    durations = []
     async with aiohttp.ClientSession() as session:
-        nonzero = np.argwhere(P > 0)
-        for i, j in nonzero:
-            prob_ij = float(P[i, j])
-            isl_mid = int(isl_mids[i])
-            osl_mid = int(osl_mids[j])
+        print(f"Sampling response time at ISL={isl_toks}, OSL={osl_toks}")
+        for s in range(samples):
+            dur = await send_request_cal(
+                session=session,
+                base_url=base_url,
+                model=model,
+                prompt=prompt,
+                osl=osl_toks,
+            )
+            print(f"  Sample {s+1}: t={dur:.3f}s")
+            if dur > 0:
+                durations.append(dur)
 
-            # cached prompt per ISL midpoint
-            if isl_mid not in prompts_by_isl:
-                prompts_by_isl[isl_mid] = generate_random_prompt(tokenizer, isl_mid)
-            prompt = prompts_by_isl[isl_mid]
+    if not durations:
+        print("Warning: no successful calibration samples, returning 0.")
+        return 0.0
 
-            bin_durations = []
-            print(f"bin({i},{j}): input tokens={isl_mid}, output tokens={osl_mid}")
-            for s in range(samples_per_bin):
-                dur = await send_request_cal(
-                    session=session,
-                    base_url=base_url,
-                    model=model,
-                    prompt=prompt,
-                    osl=osl_mid,
-                )
-                print(f"  Sample {s+1}: t={dur:.3f}s")
-                if dur > 0:
-                    bin_durations.append(dur)
-
-            avg_bin_R = float(np.mean(bin_durations))
-            total_weighted_R += prob_ij * avg_bin_R
-
-    return total_weighted_R
-
-# ----------------------------
-# Entrypoint
-# ----------------------------
+    return float(np.mean(durations))
 
 def main():
     model = os.environ.get("MODEL")
@@ -104,23 +76,20 @@ def main():
 
     wait_for_server(base_url)
 
-    isl_bins, osl_bins, P, k, theta = load_wildchat_workload(stats_path)
+    avg_isl, avg_osl, mean_gap, arrival_rate = load_wildchat_workload(stats_path)
 
-    print("Calibrating average response time over WildChat bins...")
+    print("Calibrating average response time at mean tokens...")
     avg_R = asyncio.run(
         estimate_avg_response_time(
             base_url=base_url, 
             model=model, 
-            isl_bins=isl_bins, 
-            osl_bins=osl_bins, 
-            P=P, 
-            samples_per_bin=3
+            isl_toks=avg_isl,
+            osl_toks=avg_osl,
+            samples=3,
         )
     )
     print(f"\nEstimated avg response time: {avg_R:.3f} s")
 
-    mean_gap = k * theta
-    arrival_rate = 1.0 / mean_gap  # req/s
     natural_conc = arrival_rate * avg_R
     concurrency_cap = max(int(np.ceil(natural_conc)), 1)
 

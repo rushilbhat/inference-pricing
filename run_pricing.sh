@@ -6,8 +6,6 @@ GPU_COST=2.50
 NUM_REQUESTS=30
 PORT=8000
 
-WORKLOAD_MODE="wildchat"   # or "generic"
-
 sudo docker run -d --name pricing-server \
     --runtime nvidia --gpus all \
     --network host \
@@ -23,27 +21,20 @@ env_args=(
     -e GPU_COST="$GPU_COST"
     -e NUM_REQUESTS="$NUM_REQUESTS"
     -e PORT="$PORT"
-    -e WORKLOAD_MODE="$WORKLOAD_MODE"
+)
+
+WORKLOAD_STATS_PATH="/workspace/wildchat_workload_~first_1000.json"
+WORKLOAD_CALIB_PATH="/workspace/wildchat_calibration_~first_1000.json"
+
+env_args+=(
+    -e WORKLOAD_STATS_PATH="$WORKLOAD_STATS_PATH"
+    -e WORKLOAD_CALIB_PATH="$WORKLOAD_CALIB_PATH"
 )
 
 CLIENT_CMD="pip install -q requests transformers numpy aiohttp datasets; "
 
-if [[ "$WORKLOAD_MODE" == "wildchat" ]]; then
-    WORKLOAD_STATS_PATH="/workspace/wildchat_workload_~first_1000.json"
-    WORKLOAD_CALIB_PATH="/workspace/wildchat_calibration_~first_1000.json"
-
-    env_args+=(
-        -e WORKLOAD_STATS_PATH="$WORKLOAD_STATS_PATH"
-        -e WORKLOAD_CALIB_PATH="$WORKLOAD_CALIB_PATH"
-    )
-
-    CLIENT_CMD+="python3 process_wildchat.py; "
-    CLIENT_CMD+="python3 calibrate_workload.py; "
-
-else
-    CLIENT_CMD+="echo 'Skipping process_wildchat.py and calibration (generic workload)'; "
-fi
-
+CLIENT_CMD+="python3 process_wildchat.py; "
+CLIENT_CMD+="python3 calibrate_workload.py; "
 CLIENT_CMD+="python3 pricing_calculator.py"
 
 sudo docker run --rm --name pricing-client \
