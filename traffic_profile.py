@@ -27,13 +27,22 @@ class TrafficProfile:
                 break
             
             conv = entry["conversation"]
+            history_len = 0
             for i in range(0, len(conv) - 1, 2):
-                if conv[i]["role"] == "user" and conv[i+1]["role"] == "assistant":
+                user_msg = conv[i]
+                asst_msg = conv[i+1]
+                if user_msg["role"] == "user" and asst_msg["role"] == "assistant":
+                    user_len = len(self.tokenizer.encode(user_msg["content"]))
+                    asst_len = len(self.tokenizer.encode(asst_msg["content"]))
+
                     rows.append({
-                        "timestamp": conv[i+1]["timestamp"].isoformat(),
-                        "isl": len(self.tokenizer.encode(conv[i]["content"])),
-                        "osl": len(self.tokenizer.encode(conv[i+1]["content"])),
+                        "timestamp": asst_msg["timestamp"].isoformat(),
+                        "isl": history_len + user_len,
+                        "osl": asst_len,
                     })
+                    
+                    history_len += (user_len + asst_len)
+
                     if len(rows) >= self.limit: 
                         break
 
