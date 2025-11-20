@@ -3,7 +3,6 @@
 MODEL="Qwen/Qwen2.5-0.5B"
 GPU_TYPE="nvidia_a100_40gb"
 GPU_COST=2.50
-NUM_REQUESTS=30
 PORT=8000
 
 sudo docker run -d --name pricing-server \
@@ -21,7 +20,7 @@ sudo docker run --rm --name pricing-client \
     --network host \
     -v "$(pwd)":/workspace \
     -w /workspace \
-    -e MODEL="$MODEL" -e GPU_TYPE="$GPU_TYPE" -e GPU_COST="$GPU_COST" -e NUM_REQUESTS="$NUM_REQUESTS" -e PORT="$PORT" \
+    -e MODEL="$MODEL" -e GPU_TYPE="$GPU_TYPE" -e GPU_COST="$GPU_COST" -e PORT="$PORT" \
     python:3.12-slim \
     bash -c "$CLIENT_CMD"
 

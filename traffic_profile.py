@@ -71,16 +71,7 @@ class TrafficProfile:
         w_avg_isl = np.sum(midpoints * P_isl)
         w_avg_osl = np.sum(midpoints * P_osl)
 
-        timestamps = sorted([
-            datetime.fromisoformat(r["timestamp"]).timestamp() 
-            for r in self.entries
-        ])
-        gaps = np.diff(timestamps)
-        mean_gap = np.mean(gaps)
-        arrival_rate = 1.0 / mean_gap
-
         return {
             "avg_isl": int(round(w_avg_isl)),
             "avg_osl": int(round(w_avg_osl)),
-            "arrival_rate": arrival_rate
         }

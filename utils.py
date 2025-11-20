@@ -3,9 +3,6 @@ import asyncio
 import aiohttp
 import numpy as np
 
-WARMUP_REQUESTS = 5
-ESTIMATE_SAMPLES = 3
-
 async def wait_for_server(base_url, timeout=300):
     print(f"\nWaiting for vLLM at {base_url}...")
     start = time.time()
