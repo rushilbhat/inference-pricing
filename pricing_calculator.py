@@ -12,16 +12,12 @@ from traffic_profile import TrafficProfile
 
 TARGET_UTILISATION = 0.85
 
-class CapacityEstimator:
+class Benchmarker:
     def __init__(self, base_url, model_name, tokenizer):
         self.base_url = base_url
         self.model = model_name
         self.tokenizer = tokenizer
         self.headers = {"Content-Type": "application/json"}
-
-        # SLO Constraints
-        self.max_ttft = 1.0 
-        self.max_tpot = 0.2
 
         self.batch_schedule = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
 
@@ -45,7 +41,7 @@ class CapacityEstimator:
         except Exception as e:
             return None
 
-    async def find_peak_throughput(self, isl, osl):
+    async def run_sweep(self, isl, osl):
         prompt = generate_random_prompt(self.tokenizer, isl)
         payload = {
             "model": self.model,
@@ -57,13 +53,9 @@ class CapacityEstimator:
         }
         payload_bytes = json.dumps(payload).encode('utf-8')
 
-        best = {
-            "batch_size": 1,
-            "input_tps": 0,
-            "output_tps": 0
-        }
+        perf_measurements = []
         
-        print(f"\n[ConcurrencyEstimator] Sweeping for Saturation (ISL={isl}, OSL={osl})")
+        print(f"\n[Benchmarker] Sweeping for Saturation (ISL={isl}, OSL={osl})")
         
         connector = aiohttp.TCPConnector(limit=0, limit_per_host=0)
         async with aiohttp.ClientSession(connector=connector) as session:
@@ -103,22 +95,55 @@ class CapacityEstimator:
                 #     print(f" Batch: {b} | ID: {i} | Start: {r['start_t']:.10f} | First: {r['first_token_t']:.10f} | End: {r['end_t']:.10f} | Prefill: {r['first_token_t'] - r['start_t']:.10f} | Decode: {r['end_t'] - r['first_token_t']:.10f} | Input TPS: {len(valid)*isl/(r['first_token_t'] - r['start_t']):.10f} |  Output TPS: {len(valid) *osl/(r['end_t'] - r['first_token_t']):.10f}")
                 # print("")
 
-                if p90_ttft > self.max_ttft:
-                    print(f"SLO LIMIT REACHED: TTFT {p90_ttft:.5f}s > {self.max_ttft}s")
-                    break
-                if p90_tpot > self.max_tpot:
-                    print(f"SLO LIMIT REACHED: TPOT {p90_tpot*1000:.5f}ms > {self.max_tpot*1000:.5f}ms")
-                    break
+                perf_measurements.append({
+                    "batch_size": b,
+                    "input_tps": input_tps,
+                    "output_tps": output_tps,
+                    "p90_ttft": p90_ttft,
+                    "p90_tpot": p90_tpot
+                })
 
-                if output_tps > best["output_tps"]:
-                    best = {
-                        "batch_size": b,
-                        "input_tps": input_tps,
-                        "output_tps": output_tps
-                    }
-                print(f"Diff: {start_times[-1] - start_times[0]}")
 
-        return best
+        return perf_measurements
+    
+
+def calculate_prices(measurements, gpu_cost):
+    slos = [
+        ("Baseline", 1.0, 0.05), # 20 tok/s
+        ("Fast",     0.5, 0.0167), # 60 tok/s
+        ("Instant", 0.25, 0.01), # 100 tok/s
+    ]
+
+    gpu_cost_per_sec = gpu_cost / 3600.0
+    
+    print(f"\n{'='*110}")
+    print(f"PRICING MATRIX (Hardware Cost: ${gpu_cost:.2f}/hr)")
+    print(f"{'='*110}")
+    print(f"{'Scenario':<22} | {'SLO (TTFT/TPOT)':<18} | {'Max Batch':<10} | {'In TPS':<10} | {'Out TPS':<10} | {'In $/1M':<10} | {'Out $/1M':<10}")
+    print(f"{'-'*110}")
+
+    for name, max_ttft, max_tpot in slos:
+        valid_runs = [
+            run for run in measurements 
+            if run['p90_ttft'] <= max_ttft and run['p90_tpot'] <= max_tpot
+        ]
+        
+        slo_desc = f"<{max_ttft}s / <{int(max_tpot*1000)}ms"
+
+        if not valid_runs:
+            print(f"{name:<22} | {slo_desc:<18} | {'None':<10} | {'-':<10} | {'-':<10} | {'-':<10}")
+            continue
+
+        best_run = max(valid_runs, key=lambda x: x['output_tps'])        
+        price_in_token = gpu_cost_per_sec / (best_run['input_tps'] * TARGET_UTILISATION)
+        price_out_token = gpu_cost_per_sec / (best_run['output_tps'] * TARGET_UTILISATION)
+        price_in_1m = price_in_token * 1_000_000
+        price_out_1m = price_out_token * 1_000_000
+        print(f"{name:<22} | {slo_desc:<18} | {best_run['batch_size']:<10} | {best_run['input_tps']:<10.0f} | {best_run['output_tps']:<10.0f} | {price_in_1m:<10.4f} | {price_out_1m:<10.4f}")
+
+    print(f"{'='*110}")
+    print(f"* Assumes {TARGET_UTILISATION*100}% utilisation.")
+
 
 async def main():
     MODEL = os.environ.get('MODEL')
@@ -137,33 +162,9 @@ async def main():
 
     await wait_for_server(BASE_URL)
 
-    estimator = CapacityEstimator(BASE_URL, MODEL, tokenizer)
-    capacity = await estimator.find_peak_throughput(isl, osl)
-    tps_in = capacity["input_tps"]
-    tps_out = capacity["output_tps"]
-
-    if tps_in == 0 or tps_out == 0:
-        print("Benchmark failed to get valid throughput.")
-        return
-
-    gpu_cost_per_sec = GPU_COST / 3600.0
-    price_in = gpu_cost_per_sec / (tps_in * TARGET_UTILISATION)
-    price_out = gpu_cost_per_sec / (tps_out * TARGET_UTILISATION)
-    
-    print(f"\n{'='*60}")
-    print("RESULTS")
-    print(f"{'='*60}")
-    print(f"Throughput:in={tps_in:.2f} tok/s | out={tps_out:.2f} tok/s")
-    print(f"\nPRICING:")
-    print(f"  Input tokens:")
-    print(f"    Per token:     ${price_in:.10f}")
-    print(f"    Per 1K tokens: ${price_in * 1000:.8f}")
-    print(f"    Per 1M tokens: ${price_in * 1000000:.4f}")
-    print(f"  Output tokens:")
-    print(f"    Per token:     ${price_out:.10f}")
-    print(f"    Per 1K tokens: ${price_out * 1000:.8f}")
-    print(f"    Per 1M tokens: ${price_out * 1000000:.4f}")
-    print(f"{'='*60}")
+    benchmarker = Benchmarker(BASE_URL, MODEL, tokenizer)
+    measurements = await benchmarker.run_sweep(isl, osl)
+    if measurements: calculate_prices(measurements, GPU_COST)
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,6 +1,7 @@
 #!/bin/bash
 
-MODEL="Qwen/Qwen2.5-0.5B"
+# MODEL="Qwen/Qwen2.5-0.5B"
+MODEL="unsloth/Meta-Llama-3.1-8B"
 GPU_TYPE="nvidia_a100_40gb"
 GPU_COST=2.50
 PORT=8000
