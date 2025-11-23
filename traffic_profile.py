@@ -2,16 +2,17 @@ import os
 import json
 import numpy as np
 from datasets import load_dataset
-from datetime import datetime
+from datetime import date
 
 class TrafficProfile:
 
     BINS = [0, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 
-    def __init__(self, tokenizer, cache_file="wildchat_cache.jsonl", limit=1000):
+    def __init__(self, tokenizer, start_date, end_date, cache_file="wildchat_cache.jsonl"):
         self.tokenizer = tokenizer
         self.cache_file = cache_file
-        self.limit = limit
+        self.start_date = start_date
+        self.end_date = end_date
         self.entries = self._load_entries()
 
     def _load_entries(self):
@@ -19,8 +20,14 @@ class TrafficProfile:
             with open(self.cache_file, "r", encoding="utf-8") as f:
                 return [json.loads(line) for line in f]
 
+        print("[TrafficProfile] Cache not found. Loading dataset...")
         ds = load_dataset("allenai/WildChat-1M", split="train")
-        
+        filtered_ds = ds.filter(
+            lambda x: self.start_date <= x["timestamp"].date() <= self.end_date,
+            num_proc=os.cpu_count()
+        )
+        print(f"[TrafficProfile] Found {len(filtered_ds)} conversations.")
+
         rows = []
         for entry in ds:
             if len(rows) >= self.limit:
