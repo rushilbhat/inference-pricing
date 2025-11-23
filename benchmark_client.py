@@ -122,7 +122,7 @@ def print_pricing(measurements, server_cost_per_hr):
     server_cost_per_sec = server_cost_per_hr / 3600.0
     
     print(f"\n{'='*110}")
-    print(f"PRICING MATRIX (Hardware Cost: ${server_cost_per_sec:.2f}/hr)")
+    print(f"PRICING MATRIX (Hardware Cost: ${server_cost_per_hr}/hr)")
     print(f"{'='*110}")
     print(f"{'Scenario':<22} | {'SLO (TTFT/TPOT)':<18} | {'Max Batch':<10} | {'In TPS':<10} | {'Out TPS':<10} | {'In $/1M':<10} | {'Out $/1M':<10}")
     print(f"{'-'*110}")
@@ -148,7 +148,7 @@ def print_pricing(measurements, server_cost_per_hr):
     print(f"* Assumes {config.TARGET_UTILISATION*100}% utilisation.")
 
 
-async def main():
+async def main(): 
     QUANTIZATION = os.environ.get('QUANTIZATION')
     TP = os.environ.get('TP')
 

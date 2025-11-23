@@ -1,63 +1,62 @@
 #!/usr/bin/env python3
 import argparse
+import os
 import subprocess
+import sys
+import time
+from contextlib import contextmanager
+
 import config
 
-def main():
-    parser = argparse.ArgumentParser()
+
+@contextmanager
+def running_vllm_server(quantization, tp):
+    model_path = config.QUANTIZATION_MAP[quantization]
+    print(f"[run_benchmark] Launching vLLM server for {model_path} with TP={tp}")
+
+    cmd = [
+        "vllm", "serve",
+        model_path,
+        "--port", str(config.PORT),
+        "--tensor-parallel-size", str(tp),
+    ]
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+    )
+    print(f"[run_benchmark] vLLM server PID={proc.pid}")
+
+    try:
+        yield proc
+    finally:
+        print("[run_benchmark] Stopping vLLM server...")
+        try:
+            proc.terminate()
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run vLLM pricing benchmark")
     parser.add_argument("quantization", choices=config.QUANTIZATION_MAP.keys())
     parser.add_argument("tp", type=int, default=1)
     args = parser.parse_args()
-    
-    print(f"\nModel={config.MODEL_FAMILY} | Mode={args.quantization} | TP={args.tp} | Cost=${config.SERVER_COST_PER_HR:.2f}/hr")
 
-    SERVER_CONTAINER = "vllm-server"
-    CLIENT_CONTAINER = "benchmark-client"
+    print(
+        f"\nModel family: {config.MODEL_FAMILY} | Quantization: {args.quantization} | TP: {args.tp}"
+    )
 
-    try:
-        print("\nStarting Server...")
-        server_cmd = [
-            "sudo", "docker", "run", "-d", "--name", SERVER_CONTAINER,
-            "--runtime", "nvidia", "--gpus", "all",
-            "--network", "host",
-            "-v", f"{subprocess.os.path.expanduser('~')}/.cache/huggingface:/root/.cache/huggingface",
-            "--ipc=host",
-            "vllm/vllm-openai:latest",
-            "--model", config.QUANTIZATION_MAP[args.quantization],
-            "--port", str(config.PORT),
-            "--tensor-parallel-size", str(args.tp)
-        ]
-        subprocess.run(server_cmd, check=True)
+    env = os.environ.copy()
+    env["QUANTIZATION"] = args.quantization
+    env["TP"] = str(args.tp)
 
-        client_env_vars = [
-            f"-e", f"QUANTIZATION={args.quantization}",
-            f"-e", f"TP={args.tp}",
-        ]
-        
-        client_script = (
-            "pip install -q requests transformers numpy aiohttp datasets matplotlib && "
-            "export MPLBACKEND=Agg && "
-            "python3 benchmark_client.py && "
-            f"python3 plot_results.py {config.RESULTS_FILENAME}"
-        )
+    with running_vllm_server(args.quantization, args.tp):
+        time.sleep(5)
+        rc = subprocess.call([sys.executable, "benchmark_client.py"], env=env)
 
-        client_cmd = [
-            "sudo", "docker", "run", "--rm", "--name", CLIENT_CONTAINER,
-            "--network", "host",
-            "-v", f"{subprocess.os.getcwd()}:/workspace",
-            "-w", "/workspace"
-        ] + client_env_vars + [
-            "python:3.12-slim",
-            "bash", "-c", client_script
-        ]
-        subprocess.run(client_cmd, check=True)
-    except Exception as e:
-        print(f"\nError: {e}")
-    finally:
-        print("\nCleaning up...")
-        subprocess.run(["sudo", "docker", "stop", SERVER_CONTAINER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        subprocess.run(["sudo", "docker", "rm", SERVER_CONTAINER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        print("Done.")
+    sys.exit(rc)
 
 if __name__ == "__main__":
     main()
