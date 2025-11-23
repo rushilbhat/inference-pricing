@@ -7,17 +7,36 @@ import aiohttp
 from transformers import AutoTokenizer
 import numpy as np
 
-from utils import wait_for_server, generate_random_prompt
 from traffic_profile import TrafficProfile
 import config
 
-class Benchmarker:
+class BenchmarkClient:
     def __init__(self, base_url, model_path, tokenizer):
         self.base_url = base_url
         self.model = model_path
         self.tokenizer = tokenizer
         self.headers = {"Content-Type": "application/json"}
         self.batch_schedule = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
+
+    async def wait_for_server(self, timeout=300):
+        print(f"\nWaiting for vLLM at {self.base_url}...")
+        start = time.time()
+        async with aiohttp.ClientSession() as session:
+            while time.time() - start < timeout:
+                try:
+                    async with session.get(f"{self.base_url}/v1/models") as resp:
+                        if resp.status == 200:
+                            print("Server is ready.")
+                            return True
+                except:
+                    pass
+                await asyncio.sleep(2)
+        raise TimeoutError("vLLM server did not start within timeout period")
+    
+    def generate_random_prompt(self, num_tokens):
+        vocab_size = self.tokenizer.vocab_size
+        random_token_ids = np.random.randint(0, vocab_size, size=num_tokens)
+        return self.tokenizer.decode(random_token_ids, skip_special_tokens=True)
 
     async def _measure_single_request(self, session, payload_bytes):
         start_t = time.perf_counter()
@@ -39,7 +58,7 @@ class Benchmarker:
             return None
 
     async def run_sweep(self, isl, osl):
-        prompt = generate_random_prompt(self.tokenizer, isl)
+        prompt = self.generate_random_prompt(isl)
         payload = {
             "model": self.model,
             "prompt": prompt,
@@ -50,7 +69,7 @@ class Benchmarker:
         }
         payload_bytes = json.dumps(payload).encode('utf-8')
 
-        print(f"\n[Benchmarker] ISL={isl}, OSL={osl}")
+        print(f"\n[BenchmarkClient] ISL={isl}, OSL={osl}")
         
         perf_measurements = []
         connector = aiohttp.TCPConnector(limit=0, limit_per_host=0)
@@ -99,7 +118,7 @@ class Benchmarker:
         return perf_measurements
     
 
-def calculate_prices(measurements, server_cost_per_hr):
+def print_pricing(measurements, server_cost_per_hr):
     server_cost_per_sec = server_cost_per_hr / 3600.0
     
     print(f"\n{'='*110}")
@@ -144,13 +163,12 @@ async def main():
     metrics = profile.compute_metrics()
     isl, osl = metrics['avg_isl'], metrics['avg_osl']
 
-    await wait_for_server(BASE_URL)
-
-    benchmarker = Benchmarker(BASE_URL, MODEL_PATH, tokenizer)
+    benchmarker = BenchmarkClient(BASE_URL, MODEL_PATH, tokenizer)
+    await benchmarker.wait_for_server()
     measurements = await benchmarker.run_sweep(isl, osl)
 
     if measurements: 
-        calculate_prices(measurements, SERVER_COST_PER_HR)
+        print_pricing(measurements, SERVER_COST_PER_HR)
 
         folder_name = "benchmark_results"
         os.makedirs(folder_name, exist_ok=True)
