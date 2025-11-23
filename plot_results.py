@@ -35,7 +35,7 @@ def plot_panel(ax, data, key):
     title = key.replace('_', ' ').upper()
     batch_sizes = sorted(set(bs for d in data.values() for bs in d['batch_sizes']))
     for i, (config_id, d) in enumerate(data.items()):
-        ax.plot(d['batch_sizes'], d[key], linewidth=2.5, 
+        ax.plot(d['batch_sizes'], d[key], linewidth=1, 
                 color=COLOURS[i % len(COLOURS)], label=config_id, alpha=0.8)
         
     x_start = batch_sizes[0]

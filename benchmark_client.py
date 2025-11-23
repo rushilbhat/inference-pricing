@@ -16,7 +16,7 @@ class BenchmarkClient:
         self.model = model_path
         self.tokenizer = tokenizer
         self.headers = {"Content-Type": "application/json"}
-        self.batch_schedule = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
+        self.batch_schedule = [1, 2, 4, 8]
 
     async def wait_for_server(self, timeout=300):
         print(f"\nWaiting for vLLM at {self.base_url}...")
@@ -149,14 +149,11 @@ def print_pricing(measurements, server_cost_per_hr):
 
 
 async def main():
-    MODEL_FAMILY = os.environ.get('MODEL_FAMILY')
-    MODEL_PATH = os.environ.get('MODEL_PATH')
-    SEVER_TYPE = os.environ.get('SEVER_TYPE')
-    SERVER_COST_PER_HR = float(os.environ.get('SERVER_COST_PER_HR'))
     QUANTIZATION = os.environ.get('QUANTIZATION')
     TP = os.environ.get('TP')
-    PORT = os.environ.get('PORT')
-    BASE_URL = f"http://localhost:{PORT}"
+
+    MODEL_PATH = config.QUANTIZATION_MAP[QUANTIZATION]
+    BASE_URL = f"http://localhost:{config.PORT}"
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
     profile = TrafficProfile(tokenizer, start_date=config.TRAFFIC_START_DATE, end_date=config.TRAFFIC_END_DATE)
@@ -168,15 +165,12 @@ async def main():
     measurements = await benchmarker.run_sweep(isl, osl)
 
     if measurements: 
-        print_pricing(measurements, SERVER_COST_PER_HR)
+        print_pricing(measurements, config.SERVER_COST_PER_HR)
 
-        folder_name = "benchmark_results"
-        os.makedirs(folder_name, exist_ok=True)
-        filename = f"{MODEL_FAMILY}_{SEVER_TYPE}.jsonl"
-        filepath = os.path.join(folder_name, filename)
+        os.makedirs(config.RESULTS_FOLDER, exist_ok=True)
         entry = {"id": f"{QUANTIZATION}_{TP}", "measurements": measurements}
         try:
-            with open(filepath, 'a') as f:
+            with open(config.RESULTS_FILENAME, 'a') as f:
                 f.write(json.dumps(entry) + "\n")
         except Exception as e:
             print(f"\n[Error]: {e}")

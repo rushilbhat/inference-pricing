@@ -23,3 +23,6 @@ SLO_LEVELS = [
     ("Fast",     0.5,  0.0167), # 60 tok/s
     ("Instant",  0.25, 0.01),   # 100 tok/s
 ]
+
+RESULTS_FOLDER = "benchmark_results"
+RESULTS_FILENAME = f"{RESULTS_FOLDER}/{MODEL_FAMILY}_{SERVER_TYPE}.jsonl"

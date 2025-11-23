@@ -8,8 +8,6 @@ def main():
     parser.add_argument("quantization", choices=config.QUANTIZATION_MAP.keys())
     parser.add_argument("tp", type=int, default=1)
     args = parser.parse_args()
-
-    model_path = config.QUANTIZATION_MAP[args.quantization]
     
     print(f"\nModel={config.MODEL_FAMILY} | Mode={args.quantization} | TP={args.tp} | Cost=${config.SERVER_COST_PER_HR:.2f}/hr")
 
@@ -25,23 +23,23 @@ def main():
             "-v", f"{subprocess.os.path.expanduser('~')}/.cache/huggingface:/root/.cache/huggingface",
             "--ipc=host",
             "vllm/vllm-openai:latest",
-            "--model", model_path,
+            "--model", config.QUANTIZATION_MAP[args.quantization],
             "--port", str(config.PORT),
             "--tensor-parallel-size", str(args.tp)
         ]
         subprocess.run(server_cmd, check=True)
 
         client_env_vars = [
-            f"-e", f"MODEL_FAMILY={config.MODEL_FAMILY}", 
-            f"-e", f"MODEL_PATH={model_path}",
-            f"-e", f"SEVER_TYPE={config.SERVER_TYPE}",
-            f"-e", f"SERVER_COST_PER_HR={config.SERVER_COST_PER_HR}",
             f"-e", f"QUANTIZATION={args.quantization}",
             f"-e", f"TP={args.tp}",
-            f"-e", f"PORT={config.PORT}"
         ]
         
-        client_script = "pip install -q requests transformers numpy aiohttp datasets && python3 benchmark_client.py"
+        client_script = (
+            "pip install -q requests transformers numpy aiohttp datasets matplotlib && "
+            "export MPLBACKEND=Agg && "
+            "python3 benchmark_client.py && "
+            f"python3 plot_results.py {config.RESULTS_FILENAME}"
+        )
 
         client_cmd = [
             "sudo", "docker", "run", "--rm", "--name", CLIENT_CONTAINER,
