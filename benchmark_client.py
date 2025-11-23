@@ -7,7 +7,7 @@ import aiohttp
 from transformers import AutoTokenizer
 import numpy as np
 
-from traffic_profile import TrafficProfile
+from wildchat.traffic_profile import TrafficProfile
 import config
 
 class BenchmarkClient:

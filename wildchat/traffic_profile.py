@@ -8,9 +8,9 @@ class TrafficProfile:
 
     BINS = [0, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 
-    def __init__(self, tokenizer, start_date, end_date, cache_file="wildchat_cache.jsonl"):
+    def __init__(self, tokenizer, start_date, end_date):
         self.tokenizer = tokenizer
-        self.cache_file = cache_file
+        self.cache_file = os.path.join(os.path.dirname(__file__), "cache.jsonl")
         self.start_date = start_date
         self.end_date = end_date
         self.entries = self._load_entries()
