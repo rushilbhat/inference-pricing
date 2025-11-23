@@ -15,7 +15,6 @@ class BenchmarkClient:
         self.base_url = base_url
         self.model = model_path
         self.tokenizer = tokenizer
-        self.headers = {"Content-Type": "application/json"}
         self.batch_schedule = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
 
     async def wait_for_server(self, timeout=300):
@@ -38,11 +37,21 @@ class BenchmarkClient:
         random_token_ids = np.random.randint(0, vocab_size, size=num_tokens)
         return self.tokenizer.decode(random_token_ids, skip_special_tokens=True)
 
-    async def _measure_single_request(self, session, payload_bytes):
+    async def _measure_single_request(self, session, isl, osl):
+        prompt = self.generate_random_prompt(isl)
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "max_tokens": osl,
+            "stop": [],
+            "ignore_eos": True,
+            "stream": True,
+        }
+
         start_t = time.perf_counter()
         first_token_t = end_t = None
         try:
-            async with session.post(f"{self.base_url}/v1/completions", data=payload_bytes, headers=self.headers, timeout=120) as response:
+            async with session.post(f"{self.base_url}/v1/completions", json=payload, timeout=120) as response:
                 if response.status != 200: return None
                 async for line in response.content:
                     data = line.decode('utf-8').strip()[6:]  # Remove 'data: ' prefix
@@ -58,27 +67,16 @@ class BenchmarkClient:
             return None
 
     async def run_sweep(self, isl, osl):
-        prompt = self.generate_random_prompt(isl)
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "max_tokens": osl,
-            "stop": [],
-            "ignore_eos": True,
-            "stream": True 
-        }
-        payload_bytes = json.dumps(payload).encode('utf-8')
-
         print(f"\n[BenchmarkClient] ISL={isl}, OSL={osl}")
         
         perf_measurements = []
         connector = aiohttp.TCPConnector(limit=0, limit_per_host=0)
         async with aiohttp.ClientSession(connector=connector) as session:
             # Warmup
-            await self._measure_single_request(session, payload_bytes)
+            await self._measure_single_request(session, isl, osl)
 
             for b in self.batch_schedule:
-                tasks = [self._measure_single_request(session, payload_bytes) for _ in range(b)]
+                tasks = [self._measure_single_request(session, isl, osl) for _ in range(b)]
                 results = await asyncio.gather(*tasks)
                 valid = [r for r in results if r is not None]
 
