@@ -36,8 +36,39 @@ class BenchmarkClient:
         vocab_size = self.tokenizer.vocab_size
         random_token_ids = np.random.randint(0, vocab_size, size=num_tokens)
         return self.tokenizer.decode(random_token_ids, skip_special_tokens=True)
+    
+    async def get_vllm_metrics(self, session):
+        try:
+            async with session.get(f"{self.base_url}/metrics") as resp:
+                if resp.status != 200: return {}
+                text = await resp.text()
 
-    async def _measure_single_request(self, session, isl, osl):
+                keys = [
+                    "vllm:prompt_tokens_total",
+                    "vllm:generation_tokens_total",
+                    "vllm:time_to_first_token_seconds_sum",
+                    "vllm:time_to_first_token_seconds_count",
+                    "vllm:inter_token_latency_seconds_sum",
+                    "vllm:inter_token_latency_seconds_count"
+                ]
+                
+                data = {}
+                for line in text.splitlines():
+                    if line.startswith("#"): continue
+                    for k in keys:
+                        if k in line:
+                            try:
+                                val = float(line.split()[-1])
+                                data[k] = val
+                            except:
+                                pass
+                return data
+        except Exception as e:
+            print(f"Error fetching metrics: {e}")
+            return {}
+
+
+    async def send_request(self, session, isl, osl):
         prompt = self.generate_random_prompt(isl)
         payload = {
             "model": self.model,
@@ -45,26 +76,14 @@ class BenchmarkClient:
             "max_tokens": osl,
             "stop": [],
             "ignore_eos": True,
-            "stream": True,
+            "stream": False
         }
-
-        start_t = time.perf_counter()
-        first_token_t = end_t = None
         try:
-            async with session.post(f"{self.base_url}/v1/completions", json=payload, timeout=120) as response:
-                if response.status != 200: return None
-                async for line in response.content:
-                    data = line.decode('utf-8').strip()[6:]  # Remove 'data: ' prefix
-                    if data == "[DONE]":break
-                    if first_token_t is None: first_token_t = time.perf_counter()
-                end_t = time.perf_counter()
-                return {
-                    "start_t": start_t,
-                    "first_token_t": first_token_t,
-                    "end_t": end_t,
-                }
-        except Exception as e:
-            return None
+            async with session.post(f"{self.base_url}/v1/completions", json=payload) as response:
+                return response.status == 200
+        except:
+            return False
+
 
     async def run_sweep(self, isl, osl):
         print(f"\n[BenchmarkClient] ISL={isl}, OSL={osl}")
@@ -73,44 +92,50 @@ class BenchmarkClient:
         connector = aiohttp.TCPConnector(limit=0, limit_per_host=0)
         async with aiohttp.ClientSession(connector=connector) as session:
             # Warmup
-            await self._measure_single_request(session, isl, osl)
+            await self.send_request(session, isl, osl)
 
             for b in self.batch_schedule:
-                tasks = [self._measure_single_request(session, isl, osl) for _ in range(b)]
-                results = await asyncio.gather(*tasks)
-                valid = [r for r in results if r is not None]
+                m_start = await self.get_vllm_metrics(session)
+                t_start = time.perf_counter()
 
-                if len(valid) < b * 0.8:
-                    print(f"Batch: {b:<6} | FAIL (High Error Rate)")
+                tasks = [self.send_request(session, isl, osl) for _ in range(b)]
+                results = await asyncio.gather(*tasks)
+                
+                t_end = time.perf_counter()
+                m_end = await self.get_vllm_metrics(session)
+                
+                if not all(results):
+                    print(f"Batch: {b:<6} | FAIL (Errors detected)")
                     break
 
-                start_times = [r['start_t'] for r in valid]
-                first_token_times = [r['first_token_t'] for r in valid]
-                end_times = [r['end_t'] for r in valid]
+                duration = t_end - t_start
 
-                batch_start_t = min(start_times)
-                batch_prefill_end_t = max(first_token_times)
-                batch_end_t = max(end_times)
+                def get_delta(key):
+                    return m_end.get(key) - m_start.get(key)
+                
+                d_prompt_toks = get_delta('vllm:prompt_tokens_total')
+                d_gen_toks = get_delta('vllm:generation_tokens_total')
+                
+                d_ttft_sum = get_delta('vllm:time_to_first_token_seconds_sum')
+                d_ttft_count = get_delta('vllm:time_to_first_token_seconds_count')
+                
+                d_tpot_sum = get_delta('vllm:inter_token_latency_seconds_sum')
+                d_tpot_count = get_delta('vllm:inter_token_latency_seconds_count')
 
-                prefill = batch_prefill_end_t - batch_start_t
-                decode = batch_end_t - batch_prefill_end_t
+                input_tps = d_prompt_toks / duration
+                output_tps = d_gen_toks / duration
 
-                input_tps = (len(valid) * isl) / prefill
-                output_tps = (len(valid) * osl) / decode
+                avg_ttft = (d_ttft_sum / d_ttft_count)
+                avg_tpot = (d_tpot_sum / d_tpot_count)
 
-                ttfts = [(r['first_token_t'] - r['start_t']) for r in valid]
-                tpots = [(r['end_t'] - r['first_token_t']) / osl for r in valid]
-                p90_ttft = np.percentile(ttfts, 90)
-                p90_tpot = np.percentile(tpots, 90)
-
-                print(f"Batch: {b:<6} | Input TPS: {input_tps:<15.5f} | Output TPS: {output_tps:<15.5f} | P90 TTFT: {p90_ttft:<15.5f} | P90 TPOT: {(p90_tpot*1000):<15.5f}ms")
-
+                print(f"Batch: {b:<6} | In TPS: {input_tps:<10.1f} | Out TPS: {output_tps:<10.1f} | Avg TTFT: {avg_ttft:<8.4f}s | Avg TPOT: {(avg_tpot*1000):<8.2f}ms")
+                
                 perf_measurements.append({
                     "batch_size": b,
                     "input_tps": input_tps,
                     "output_tps": output_tps,
-                    "p90_ttft": p90_ttft,
-                    "p90_tpot": p90_tpot
+                    "avg_ttft": avg_ttft,
+                    "avg_tpot": avg_tpot
                 })
 
         return perf_measurements
@@ -128,7 +153,7 @@ def print_pricing(measurements, server_cost_per_hr):
     for name, max_ttft, max_tpot in config.SLO_LEVELS:
         valid_runs = [
             run for run in measurements 
-            if run['p90_ttft'] <= max_ttft and run['p90_tpot'] <= max_tpot
+            if run['avg_ttft'] <= max_ttft and run['avg_tpot'] <= max_tpot
         ]
         slo_desc = f"<{max_ttft}s / <{int(max_tpot*1000)}ms"
         if not valid_runs:

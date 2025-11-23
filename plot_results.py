@@ -10,8 +10,8 @@ COLOURS = ['#6B7280', '#3B82F6', '#10B981', '#F59E0B', '#EF4444',
 METRICS = {
     'input_tps': ('tokens/sec', False),
     'output_tps': ('tokens/sec', False),
-    'p90_ttft': ('seconds', True),
-    'p90_tpot': ('milliseconds', False)
+    'avg_ttft': ('seconds', True),
+    'avg_tpot': ('milliseconds', False)
 }
 
 def load_data(jsonl_path):
@@ -25,8 +25,8 @@ def load_data(jsonl_path):
                     'batch_sizes': [m['batch_size'] for m in measurements],
                     'input_tps': [m['input_tps'] for m in measurements],
                     'output_tps': [m['output_tps'] for m in measurements],
-                    'p90_ttft': [m['p90_ttft'] for m in measurements],
-                    'p90_tpot': [m['p90_tpot'] * 1000 for m in measurements]
+                    'avg_ttft': [m['avg_ttft'] for m in measurements],
+                    'avg_tpot': [m['avg_tpot'] * 1000 for m in measurements]
                 }
     return data
 
@@ -39,8 +39,8 @@ def plot_panel(ax, data, key):
                 color=COLOURS[i % len(COLOURS)], label=config_id, alpha=0.8)
         
     x_start = batch_sizes[0]
-    if key in ['p90_ttft', 'p90_tpot']:
-        is_tpot = key == 'p90_tpot'
+    if key in ['avg_ttft', 'avg_tpot']:
+        is_tpot = key == 'avg_tpot'
         for name, ttft_limit, tpot_limit in config.SLO_LEVELS:
             limit = tpot_limit * 1000 if is_tpot else ttft_limit
             unit = 'ms' if is_tpot else 's'
