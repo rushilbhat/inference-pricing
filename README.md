@@ -41,9 +41,15 @@ The script outputs a pricing matrix to the console. It calculates the cost based
 
 ## 4. Results & Visualization
 
-Llama-3.1-8B-Instruct was benchmarked on an NVIDIA DGX Station A100 (4x 80GB PCIe), hosted by DataCrunch via PrimeIntellect. Results are stored in the `benchmark_results/` folder.
+Llama-3.1-8B-Instruct was benchmarked on an NVIDIA DGX Station A100 (4x 80GB PCIe), hosted by DataCrunch via PrimeIntellect.
 
-The optimal configuration was `w8a8` quantization with `4`-way TP. Based on the strictest SLO adherence (TTFT < 0.25s, TPOT < 10ms), the recommended pricing is:
+*   Replication Note: The server image used was `UBUNTU 22`. To replicate with this setup, run these commands before creating the virtual environment:
+    ```bash
+    apt install python3.10-venv
+    apt-get install -y python3.10-dev
+    ```
+
+Results are stored in the `benchmark_results/` folder. The optimal configuration was `w8a8` quantization with `4`-way TP. Based on the strictest SLO adherence (TTFT < 0.25s, TPOT < 10ms), the recommended pricing is:
 
 *   **Input Price:** $0.2890 / 1M tokens
 *   **Output Price:** $1.2144 / 1M tokens
