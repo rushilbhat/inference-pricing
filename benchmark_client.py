@@ -15,7 +15,7 @@ class BenchmarkClient:
         self.base_url = base_url
         self.model = model_path
         self.tokenizer = tokenizer
-        self.batch_schedule = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
+        self.batch_schedule = [1, 2, 4, 8, 16, 32, 64, 128, 256]
 
     async def wait_for_server(self, timeout=300):
         print(f"\nWaiting for vLLM at {self.base_url}...")
