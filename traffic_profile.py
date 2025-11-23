@@ -29,10 +29,7 @@ class TrafficProfile:
         print(f"[TrafficProfile] Found {len(filtered_ds)} conversations.")
 
         rows = []
-        for entry in ds:
-            if len(rows) >= self.limit:
-                break
-            
+        for entry in filtered_ds:            
             conv = entry["conversation"]
             history_len = 0
             for i in range(0, len(conv) - 1, 2):
@@ -49,9 +46,6 @@ class TrafficProfile:
                     })
                     
                     history_len += (user_len + asst_len)
-
-                    if len(rows) >= self.limit: 
-                        break
 
         with open(self.cache_file, "w", encoding="utf-8") as f:
             for r in rows:
