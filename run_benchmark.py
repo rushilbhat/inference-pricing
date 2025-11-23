@@ -38,7 +38,7 @@ def running_vllm_server(quantization, tp):
         except subprocess.TimeoutExpired:
             proc.kill()
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(description="Run vLLM pricing benchmark")
     parser.add_argument("quantization", choices=config.QUANTIZATION_MAP.keys())
     parser.add_argument("tp", type=int, default=1)
